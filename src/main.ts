@@ -13,13 +13,32 @@ function boot(): void {
   const store = new GameStore();
   const audio = new AudioEngine(store.state.settings);
   const app = new App(root, store, audio);
-  installDebugHandle((index) => {
-    store.update((s) => {
-      s.progress.nextLevel = index;
-      s.progress.highest = Math.max(s.progress.highest, index);
-      s.resume = null;
-    });
-    app.playLevel(index);
+  installDebugHandle({
+    jumpTo: (index) => {
+      store.update((s) => {
+        s.progress.nextLevel = index;
+        s.progress.highest = Math.max(s.progress.highest, index);
+        s.resume = null;
+      });
+      app.playLevel(index);
+    },
+    seed: (patch) => {
+      store.update((s) => {
+        if (patch.level !== undefined) {
+          s.progress.nextLevel = patch.level;
+          s.progress.highest = Math.max(s.progress.highest, patch.level);
+        }
+        if (patch.coins !== undefined) s.wallet.coins = patch.coins;
+        if (patch.medallions !== undefined) s.wallet.medallions = patch.medallions;
+        if (patch.blueprints !== undefined) s.wallet.blueprints = patch.blueprints;
+        if (patch.backdateIncomeHours !== undefined) {
+          s.income.lastCollectAt = Date.now() - patch.backdateIncomeHours * 3_600_000;
+        }
+        if (patch.settings) Object.assign(s.settings, patch.settings);
+      });
+      app.applySettings(store.state.settings);
+      app.refreshAll();
+    },
   });
 
   // Browsers only allow audio after a gesture; the first touch anywhere unlocks it.

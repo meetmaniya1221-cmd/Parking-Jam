@@ -102,6 +102,8 @@ export class PlayScreen {
   private boosterButtons: BoosterButton[] = [];
   private undoButton!: HTMLButtonElement;
   private deadEndWarned = false;
+  private paused = false;
+  private ambulanceRemaining = 0;
   private deadEndTimer = 0;
 
   private readonly mode: PlayMode;
@@ -301,7 +303,32 @@ export class PlayScreen {
   }
 
   private elapsed(): number {
+    if (this.paused) return this.elapsedBeforePause;
     return this.elapsedBeforePause + (performance.now() - this.startedAt);
+  }
+
+  /**
+   * Freeze the level clock and the rescue window while the tab is hidden. A
+   * phone call must never cost a best time (GDD §14 "the OS interrupt never
+   * costs progress").
+   */
+  setPaused(paused: boolean): void {
+    if (paused === this.paused) return;
+    if (paused) {
+      this.elapsedBeforePause += performance.now() - this.startedAt;
+      if (this.ambulanceDeadline > 0) {
+        this.ambulanceRemaining = Math.max(0, this.ambulanceDeadline - performance.now());
+      }
+      this.paused = true;
+      this.saveResume();
+    } else {
+      this.paused = false;
+      this.startedAt = performance.now();
+      if (this.ambulanceRemaining > 0) {
+        this.ambulanceDeadline = performance.now() + this.ambulanceRemaining;
+        this.ambulanceRemaining = 0;
+      }
+    }
   }
 
   private leave(): void {
@@ -372,7 +399,7 @@ export class PlayScreen {
   }
 
   private tick(): void {
-    if (!this.view || this.finished) return;
+    if (!this.view || this.finished || this.paused) return;
     if (this.ambulanceDeadline > 0) {
       const left = this.ambulanceDeadline - performance.now();
       if (left <= 0) {
@@ -617,9 +644,8 @@ export class PlayScreen {
     const band = bandForLevel(this.levelIndex);
     const { district, pos, size } = chapterPosition(this.levelIndex);
 
-    let reward = null as ReturnType<typeof registerClear> | null;
-    this.store.update((s) => {
-      reward = registerClear(s, {
+    const banked = this.store.update((s) =>
+      registerClear(s, {
         levelIndex: this.levelIndex,
         slides: state.slides,
         parSlides: this.level.parSlides,
@@ -629,10 +655,8 @@ export class PlayScreen {
         ambulancesRescued: this.ambulancesRescued,
         trunks: this.trunksBanked.length,
         now: Date.now(),
-      });
-    });
-    if (!reward) return;
-    const banked = reward as ReturnType<typeof registerClear>;
+      }),
+    );
 
     this.audio.coins(banked.coins);
     this.host.refreshChrome();

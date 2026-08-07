@@ -32,6 +32,7 @@ import {
   Move,
   MoveKind,
   Terrain,
+  VehicleKind,
   VehicleTag,
   VEHICLE_LENGTH,
 } from '../core/types';
@@ -174,6 +175,7 @@ export class LotView {
   private tapTarget: ((vi: number) => void) | null = null;
   private history: HistoryEntry[] = [];
   private keyboardVi = 0;
+  private rideIndex = 0;
   private keyboardFocused = false;
 
   constructor(
@@ -193,6 +195,7 @@ export class LotView {
     this.level = level;
     this.state = createLotState(level);
     this.anims = this.buildAnims();
+    this.rideIndex = this.pickRideIndex();
 
     canvas.style.touchAction = 'none';
     canvas.tabIndex = 0;
@@ -246,6 +249,7 @@ export class LotView {
     this.state = createLotState(level);
     if (restore) this.applyRestore(restore.vehicles);
     this.anims = this.buildAnims();
+    this.rideIndex = this.pickRideIndex();
     this.history = [];
     this.particles.length = 0;
     this.hintIds = [];
@@ -261,6 +265,7 @@ export class LotView {
   private applyRestore(flat: number[]): void {
     const n = this.state.x.length;
     if (flat.length !== n * 4) return;
+    if (!this.restoreFits(flat)) return;
     for (let i = 0; i < n; i++) {
       this.state.x[i] = flat[i * 4];
       this.state.y[i] = flat[i * 4 + 1];
@@ -284,6 +289,32 @@ export class LotView {
         this.state.occ[cy * this.level.w + cx] = i;
       }
     }
+  }
+
+  /**
+   * A snapshot written by an older build could describe a lot this build no
+   * longer generates. Rather than corrupt the grid, check every car lands on
+   * free asphalt first and fall back to a fresh lot if not.
+   */
+  private restoreFits(flat: number[]): boolean {
+    const seen = new Set<number>();
+    for (let i = 0; i < this.state.x.length; i++) {
+      if (flat[i * 4 + 3]) continue;
+      const nx = flat[i * 4];
+      const ny = flat[i * 4 + 1];
+      const f = flat[i * 4 + 2] as Dir;
+      if (f < 0 || f > 3) return false;
+      for (let k = 0; k < this.state.len[i]; k++) {
+        const cx = nx - DX[f] * k;
+        const cy = ny - DY[f] * k;
+        if (cx < 0 || cy < 0 || cx >= this.level.w || cy >= this.level.h) return false;
+        const idx = cy * this.level.w + cx;
+        if (this.level.terrain[idx] === Terrain.Blocked) return false;
+        if (seen.has(idx)) return false;
+        seen.add(idx);
+      }
+    }
+    return true;
   }
 
   /** Serialise placements so an abandoned lot resumes exactly as left (GDD §14). */
@@ -452,7 +483,8 @@ export class LotView {
     const alongPx = horizontal ? dx : dy;
     const acrossPx = horizontal ? dy : dx;
 
-    // Off-axis: refuse with a head-shake, no sound.
+    // Off-axis: refuse with a head-shake and deliberately no sound. It is not
+    // an error, just physics (GDD §12).
     if (Math.abs(acrossPx) > Math.abs(alongPx) * 1.8 && Math.abs(acrossPx) > TAP_SLOP_PX * 2) {
       this.headShake = Math.min(1, this.headShake + 0.25);
     }
@@ -803,7 +835,7 @@ export class LotView {
     const kind = this.level.vehicles[vi].kind;
     // The player's equipped horn plays for their own Ride; everyone else keeps
     // their class voice, which is what makes a bump diagnostic.
-    if (vi === this.rideIndex()) {
+    if (vi === this.rideIndex) {
       const horn = findHorn(this.view.hornId);
       return { shape: horn.shape, freq: horn.freq };
     }
@@ -825,10 +857,14 @@ export class LotView {
     }
   }
 
-  /** The equipped Ride always appears in the lot, and stars in the final exit. */
-  private rideIndex(): number {
+  /**
+   * The equipped Ride always appears in the lot and stars in the final exit, so
+   * it has to be the *same* car all level — recomputing it each frame made it
+   * hop between vehicles as the lot emptied.
+   */
+  private pickRideIndex(): number {
     for (let i = 0; i < this.state.x.length; i++) {
-      if (!this.state.gone[i] && this.level.vehicles[i].kind === 'sedan') return i;
+      if (this.level.vehicles[i].kind === VehicleKind.Sedan) return i;
     }
     return 0;
   }
@@ -1078,7 +1114,7 @@ export class LotView {
 
   private collectVehicleViews(): VehicleView[] {
     const out: VehicleView[] = [];
-    const rideIdx = this.rideIndex();
+    const rideIdx = this.rideIndex;
     for (let i = 0; i < this.state.x.length; i++) {
       const a = this.anims[i];
       if (a.alpha <= 0.001 && this.state.gone[i]) continue;

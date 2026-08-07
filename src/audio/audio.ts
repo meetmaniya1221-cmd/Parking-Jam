@@ -46,7 +46,7 @@ export class AudioEngine {
   private padVoices: Array<{ osc: OscillatorNode; gain: GainNode }> = [];
   private padIntensity = 0;
 
-  private activeHorns: Array<{ at: number; stop: () => void }> = [];
+  private activeHorns: Array<{ at: number; gain: GainNode }> = [];
   private melodyStep = 0;
   private district = 0;
   private settings: Settings;
@@ -132,6 +132,7 @@ export class AudioEngine {
     attack: number,
     decay: number,
     peak: number,
+    destination?: AudioNode,
   ): GainNode | null {
     if (!this.ctx || !this.buses) return null;
     const g = this.ctx.createGain();
@@ -139,7 +140,7 @@ export class AudioEngine {
     g.gain.setValueAtTime(0.0001, t);
     g.gain.exponentialRampToValueAtTime(Math.max(0.0002, peak), t + attack);
     g.gain.exponentialRampToValueAtTime(0.0001, t + attack + decay);
-    g.connect(this.buses[bus]);
+    g.connect(destination ?? this.buses[bus]);
     return g;
   }
 
@@ -150,15 +151,14 @@ export class AudioEngine {
     decay: number,
     peak: number,
     bus: 'music' | 'ambience' | 'sfx' = 'sfx',
-    detune = 0,
+    destination?: AudioNode,
   ): void {
     if (!this.ctx) return;
-    const env = this.envelope(bus, attack, decay, peak);
+    const env = this.envelope(bus, attack, decay, peak, destination);
     if (!env) return;
     const osc = this.ctx.createOscillator();
     osc.type = type;
     osc.frequency.value = freq;
-    osc.detune.value = detune;
     osc.connect(env);
     const t = this.now();
     osc.start(t);
@@ -248,39 +248,51 @@ export class AudioEngine {
    * Horns — character comedy, and information
    * ---------------------------------------------------------------- */
 
+  /**
+   * Every honk runs through its own voice gain, so the concurrency cap can
+   * actually silence one. Bumping six cars in a second must not turn into a
+   * wall of sound — the newest honk wins, because it names the newest blocker.
+   */
   horn(shape: HornShape, freq: number, volume = 0.3): void {
-    if (!this.ctx) return;
+    if (!this.ctx || !this.buses) return;
     const t = this.now();
-    // Cap concurrency; the newest honk wins because it names the newest blocker.
-    this.activeHorns = this.activeHorns.filter((h) => t - h.at < 0.6);
-    if (this.activeHorns.length >= MAX_CONCURRENT_HORNS) {
-      this.activeHorns.shift()?.stop();
+
+    this.activeHorns = this.activeHorns.filter((h) => t - h.at < 0.8);
+    while (this.activeHorns.length >= MAX_CONCURRENT_HORNS) {
+      const oldest = this.activeHorns.shift();
+      oldest?.gain.gain.setTargetAtTime(0, t, 0.02);
     }
+
+    const voice = this.ctx.createGain();
+    voice.gain.value = 1;
+    voice.connect(this.buses.sfx);
+    this.activeHorns.push({ at: t, gain: voice });
+
     const vol = volume * (this.settings.calmHonks ? 0.55 : 1);
     const attack = this.settings.calmHonks ? 0.05 : 0.012;
-    this.activeHorns.push({ at: t, stop: () => {} });
+    const note = (f: number, type: OscillatorType, decay: number, peak: number) =>
+      this.tone(f, type, attack, decay, peak, 'sfx', voice);
 
     switch (shape) {
       case 'double':
-        this.tone(freq, 'square', attack, 0.1, vol * 0.5);
-        window.setTimeout(() => this.tone(freq * 1.26, 'square', attack, 0.14, vol * 0.5), 110);
+        note(freq, 'square', 0.1, vol * 0.5);
+        window.setTimeout(() => note(freq * 1.26, 'square', 0.14, vol * 0.5), 110);
         break;
       case 'baritone':
-        this.tone(freq, 'sawtooth', attack, 0.34, vol * 0.42);
-        this.tone(freq * 1.5, 'sawtooth', attack, 0.3, vol * 0.2);
+        note(freq, 'sawtooth', 0.34, vol * 0.42);
+        note(freq * 1.5, 'sawtooth', 0.3, vol * 0.2);
         break;
       case 'synth':
-        this.tone(freq, 'triangle', attack, 0.16, vol * 0.5);
-        this.tone(freq * 2, 'sine', attack, 0.12, vol * 0.22);
+        note(freq, 'triangle', 0.16, vol * 0.5);
+        note(freq * 2, 'sine', 0.12, vol * 0.22);
         break;
       case 'brass':
-        this.tone(freq, 'sawtooth', attack, 0.26, vol * 0.34);
-        this.tone(freq * 1.25, 'sawtooth', attack, 0.24, vol * 0.26);
-        this.tone(freq * 1.5, 'sawtooth', attack, 0.22, vol * 0.18);
+        note(freq, 'sawtooth', 0.26, vol * 0.34);
+        note(freq * 1.25, 'sawtooth', 0.24, vol * 0.26);
+        note(freq * 1.5, 'sawtooth', 0.22, vol * 0.18);
         break;
       case 'whoop': {
-        if (!this.ctx) break;
-        const env = this.envelope('sfx', attack, 0.36, vol * 0.4);
+        const env = this.envelope('sfx', attack, 0.36, vol * 0.4, voice);
         if (!env) break;
         const osc = this.ctx.createOscillator();
         osc.type = 'sine';
@@ -292,24 +304,29 @@ export class AudioEngine {
         break;
       }
       case 'bell':
-        this.tone(freq, 'sine', 0.003, 0.5, vol * 0.34);
-        this.tone(freq * 2.76, 'sine', 0.003, 0.34, vol * 0.14);
+        note(freq, 'sine', 0.5, vol * 0.34);
+        note(freq * 2.76, 'sine', 0.34, vol * 0.14);
         break;
       default:
-        this.tone(freq, 'square', attack, 0.11, vol * 0.42);
-        this.tone(freq * 1.5, 'square', attack, 0.09, vol * 0.16);
+        note(freq, 'square', 0.11, vol * 0.42);
+        note(freq * 1.5, 'square', 0.09, vol * 0.16);
     }
+
+    // Release the voice node once the longest tail has decayed.
+    window.setTimeout(() => {
+      try {
+        voice.disconnect();
+      } catch {
+        /* already released */
+      }
+      this.activeHorns = this.activeHorns.filter((h) => h.gain !== voice);
+    }, 900);
   }
 
   /** Soft bump: a honk plus a suspension thud. Never violent. */
   bump(shape: HornShape, freq: number): void {
     this.horn(shape, freq, 0.28);
     this.burst(0.1, 0.16, 220);
-  }
-
-  /** Off-axis refusal: no sound. It is not an error, just physics (GDD §12). */
-  refuse(): void {
-    /* intentionally silent */
   }
 
   /* ---------------------------------------------------------------- *

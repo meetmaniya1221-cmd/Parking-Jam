@@ -212,6 +212,13 @@ export class App {
     this.refreshChrome();
   }
 
+  /** Rebuild every cached screen — used after an out-of-band state change. */
+  refreshAll(): void {
+    this.play?.applySettings();
+    this.screens.forEach((screen) => screen.refresh());
+    this.refreshChrome();
+  }
+
   private teardownCurrent(): void {
     if (this.play) {
       this.play.unmount();
@@ -451,6 +458,7 @@ export class App {
    * ---------------------------------------------------------------- */
 
   onVisibilityChange(hidden: boolean): void {
+    this.play?.setPaused(hidden);
     if (hidden) {
       this.store.update((s) => void (s.lastSeenAt = Date.now()));
       this.store.flush();

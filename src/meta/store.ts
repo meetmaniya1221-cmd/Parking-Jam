@@ -39,11 +39,16 @@ export class GameStore {
     return () => void this.listeners.delete(listener);
   }
 
-  /** Mutate the player state, then persist and notify. */
-  update(mutator: (state: PlayerState) => void): void {
-    mutator(this.state);
+  /**
+   * Mutate the player state, then persist and notify. Whatever the mutator
+   * returns is handed straight back, so a caller can take the result of a grant
+   * or a purchase without smuggling it out through a closure.
+   */
+  update<T>(mutator: (state: PlayerState) => T): T {
+    const result = mutator(this.state);
     this.notify();
     this.scheduleSave();
+    return result;
   }
 
   /** Notify listeners without a mutation — used after external state changes. */

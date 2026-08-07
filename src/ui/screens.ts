@@ -239,10 +239,10 @@ export function createMapScreen({ store, audio, host }: Deps): Screen {
           ? button('Fund all', {
               variant: 'secondary',
               onTap: () => {
-                let count = 0;
-                store.update((state) => {
-                  count = fundAllAffordable(state, index).length;
-                  advanceDispatch(state, 'fund', count);
+                const count = store.update((state) => {
+                  const funded = fundAllAffordable(state, index).length;
+                  advanceDispatch(state, 'fund', funded);
+                  return funded;
                 });
                 if (count > 0) {
                   audio.coins(120);
@@ -263,11 +263,10 @@ export function createMapScreen({ store, audio, host }: Deps): Screen {
   }
 
   function fundProjectFlow(index: number): boolean {
-    let funded = false;
-    store.update((state) => {
+    const funded = store.update((state) => {
       const result = fundProject(state, index);
-      funded = result.funded;
-      if (funded) advanceDispatch(state, 'fund', 1);
+      if (result.funded) advanceDispatch(state, 'fund', 1);
+      return result.funded;
     });
     if (!funded) return false;
     audio.coins(80);
@@ -348,8 +347,7 @@ export function createDepotScreen({ store, audio, host }: Deps): Screen {
               icon: '🪙',
               disabled: income.coins <= 0,
               onTap: () => {
-                let got = 0;
-                store.update((state) => void (got = collectIncome(state, Date.now())));
+                const got = store.update((state) => collectIncome(state, Date.now()));
                 audio.coins(got);
                 toast(`+${formatNumber(got)} Coins`, '🪙');
                 host.refreshChrome();
@@ -398,11 +396,10 @@ export function createDepotScreen({ store, audio, host }: Deps): Screen {
               ? button('Claim', {
                   variant: 'primary',
                   onTap: () => {
-                    let claimed: { label: string } | null = null;
-                    store.update((state) => void (claimed = claimCommute(state, Date.now())));
+                    const claimed = store.update((state) => claimCommute(state, Date.now()));
                     if (claimed) {
                       audio.coins(150);
-                      toast((claimed as { label: string }).label, '🎁');
+                      toast(claimed.label, '🎁');
                     }
                     host.refreshChrome();
                     refresh();
@@ -989,12 +986,10 @@ export function createEventsScreen({ store, audio, host }: Deps): Screen {
               toast('Clean Runs earn the keys.', '🔑');
               return;
             }
-            let reward: ReturnType<typeof openTrunk> | null = null;
-            store.update((state) => {
+            const got = store.update((state) => {
               state.wallet.keys -= KEYS_PER_IMPOUND;
-              reward = openTrunk(state, Date.now() + index);
+              return openTrunk(state, Date.now() + index);
             });
-            const got = reward as unknown as ReturnType<typeof openTrunk>;
             void showTrunk(audio, {
               label: got.label,
               detail: [

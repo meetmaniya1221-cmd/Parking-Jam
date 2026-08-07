@@ -147,8 +147,6 @@ export interface Probe {
   dist: number;
   /** Nose travel needed to reach the curb cut, or −1 when no exit is reachable. */
   exitDist: number;
-  /** Index into level.exits used by exitDist, or −1. */
-  exitIndex: number;
   /** Why travel stopped. */
   block: BlockInfo;
 }
@@ -178,15 +176,12 @@ export function probe(s: LotState, vi: number, dir: Dir): Probe {
       // Reaching the border: the previous cell may hold a curb cut.
       const px = lead.x + dx * (k - 1);
       const py = lead.y + dy * (k - 1);
-      const ei = forward ? exitIndexAt(level, px, py, dir) : -1;
-      if (ei >= 0) {
-        if (exitPermitted(s, vi)) {
-          return { dist, exitDist: k - 1, exitIndex: ei, block: NO_BLOCK };
-        }
+      const hasCurbCut = forward && exitIndexAt(level, px, py, dir) >= 0;
+      if (hasCurbCut) {
+        if (exitPermitted(s, vi)) return { dist, exitDist: k - 1, block: NO_BLOCK };
         return {
           dist,
           exitDist: -1,
-          exitIndex: -1,
           block: { reason: BlockReason.VelvetRope, blockerVi: -1, cellX: px, cellY: py },
         };
       }
@@ -212,7 +207,7 @@ export function probe(s: LotState, vi: number, dir: Dir): Probe {
     dist = k;
   }
 
-  return { dist, exitDist: -1, exitIndex: -1, block };
+  return { dist, exitDist: -1, block };
 }
 
 export interface SlideCapability {
