@@ -140,7 +140,7 @@ export interface LevelDef {
 
 /** Mutable per-attempt state. Vehicles are stored parallel-array style for cheap cloning. */
 export interface LotState {
-  readonly level: LevelDef;
+  level: LevelDef;
   /** Vehicle ids, in stable order. */
   ids: Int32Array;
   x: Int16Array;
