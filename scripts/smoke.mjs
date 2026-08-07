@@ -391,6 +391,23 @@ async function checkResume(page) {
   }
 }
 
+/** Arriving at a pattern's introduction level must explain it, once. */
+async function checkPatternIntro(page) {
+  // Level 26 introduces the Slick Corridor.
+  await page.evaluate(() => window.__gridlock.jumpTo(26));
+  await page.waitForSelector('.lot__canvas');
+  await page.waitForTimeout(500);
+  const coach = page.locator('.coach');
+  if (!(await coach.isVisible().catch(() => false))) {
+    problems.push('pattern intro: no explanation shown on arrival');
+    return;
+  }
+  const text = await coach.innerText();
+  if (!/slick/i.test(text)) problems.push(`pattern intro: unexpected copy "${text}"`);
+  else step(`pattern intro shown: "${text}"`);
+  await page.screenshot({ path: `${SHOTS}/13-pattern-intro.png` });
+}
+
 async function run(page) {
   await page.goto(URL, { waitUntil: 'domcontentloaded' });
   await page.waitForSelector('.lot__canvas');
@@ -449,6 +466,7 @@ async function run(page) {
   await checkKeyboard(page);
   await checkMeteredLot(page);
   await checkResume(page);
+  await checkPatternIntro(page);
 
   // Night Shift renders through a headlight mask — a whole extra draw path.
   await page.locator('.tab--events').click();

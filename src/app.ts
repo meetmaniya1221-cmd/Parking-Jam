@@ -426,6 +426,20 @@ export class App {
       ),
     );
 
+    body.appendChild(
+      el(
+        'div',
+        { class: 'settings__stats' },
+        el('p', { class: 'setting__label', text: 'Controls' }),
+        el('p', {
+          text: 'Tap a car to drive it out. Drag along the way it faces to park it short. Tap again on a roundabout plate to turn.',
+        }),
+        el('p', {
+          text: 'Keyboard: arrows select, Enter drives, R reverses one cell, Z undoes.',
+        }),
+      ),
+    );
+
     const stats = this.store.state.stats;
     body.appendChild(
       el(

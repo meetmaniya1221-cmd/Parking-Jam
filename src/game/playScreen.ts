@@ -184,6 +184,21 @@ export class PlayScreen {
     );
   }
 
+  /**
+   * Show-don't-tell has a limit: the first time a mechanic appears it gets one
+   * line, once. The win screen teased it a level earlier; this is the arrival.
+   */
+  private announcePattern(): void {
+    if (this.mode !== 'campaign') return;
+    const intro = patternIntroducedAt(this.levelIndex);
+    if (!intro) return;
+    this.coachNode.hidden = false;
+    this.coachNode.textContent = `${intro.label} — ${intro.blurb}`;
+    window.setTimeout(() => {
+      if (this.levelIndex > TUTORIAL_LEVELS) this.coachNode.hidden = true;
+    }, 4200);
+  }
+
   private buildCoach(): HTMLElement {
     this.coachNode = el('div', { class: 'coach', hidden: true });
     return this.coachNode;
@@ -272,6 +287,7 @@ export class PlayScreen {
     this.syncHud();
     this.startAmbulanceWindow();
     this.scheduleCoach();
+    this.announcePattern();
     this.tickTimer = window.setInterval(() => this.tick(), 250);
     if (this.mode === 'campaign') prefetchLevel(this.levelIndex + 1);
   }
@@ -688,7 +704,7 @@ export class PlayScreen {
     window.clearTimeout(this.coachTimer);
     if (this.levelIndex > TUTORIAL_LEVELS || this.store.state.flags.tutorialSelfDriven) return;
     const captions = [
-      'Drag a car the way it faces.',
+      'Tap a car to drive it out.',
       'Blocked? It just honks. No harm done.',
       'Read the order. Then go.',
     ];
