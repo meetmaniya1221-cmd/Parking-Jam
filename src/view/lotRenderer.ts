@@ -374,25 +374,60 @@ function drawRoundabout(
 ): void {
   const cx = x + cw / 2;
   const cy = y + ch / 2;
-  const r = Math.min(cw, ch) * 0.38;
-  ctx.fillStyle = withAlpha(palette.sand, 0.28);
+  const r = Math.min(cw, ch) * 0.4;
+
+  // A raised turntable plate, not a smudge: it has to read as a thing you use.
+  ctx.fillStyle = withAlpha(palette.ink, 0.3);
+  ctx.beginPath();
+  ctx.ellipse(cx, cy + ch * 0.04, r, r * CELL_ASPECT, 0, 0, Math.PI * 2);
+  ctx.fill();
+
+  const plate = ctx.createRadialGradient(cx, cy - r * 0.3, r * 0.1, cx, cy, r);
+  plate.addColorStop(0, palette.sand);
+  plate.addColorStop(1, shade(palette.sand, -0.32));
+  ctx.fillStyle = plate;
   ctx.beginPath();
   ctx.ellipse(cx, cy, r, r * CELL_ASPECT, 0, 0, Math.PI * 2);
   ctx.fill();
-  ctx.strokeStyle = withAlpha(palette.lanePaint, 0.8);
-  ctx.lineWidth = Math.max(1.5, cw * 0.05);
-  const from = spin >= 0 ? 0.2 : 1.2;
-  ctx.beginPath();
-  ctx.ellipse(cx, cy, r * 0.66, r * 0.66 * CELL_ASPECT, 0, from * Math.PI, (from + 1.2) * Math.PI);
+
+  ctx.strokeStyle = withAlpha(palette.ink, 0.4);
+  ctx.lineWidth = Math.max(1, cw * 0.02);
   ctx.stroke();
-  // Arrowhead showing which way the plate turns.
-  const end = (from + 1.2) * Math.PI;
-  const ax = cx + Math.cos(end) * r * 0.66;
-  const ay = cy + Math.sin(end) * r * 0.66 * CELL_ASPECT;
-  ctx.fillStyle = withAlpha(palette.lanePaint, 0.9);
+
+  // Rotation arrow, drawn thick enough to read at a glance and shape-coded by
+  // direction so the plate never depends on colour alone.
+  const clockwise = spin >= 0;
+  ctx.save();
+  ctx.translate(cx, cy);
+  ctx.scale(1, CELL_ASPECT);
+  ctx.strokeStyle = withAlpha(palette.ink, 0.72);
+  ctx.lineWidth = Math.max(2, cw * 0.075);
+  ctx.lineCap = 'round';
+  const from = clockwise ? -0.45 * Math.PI : 1.45 * Math.PI;
+  const to = clockwise ? 1.05 * Math.PI : -0.05 * Math.PI;
   ctx.beginPath();
-  ctx.arc(ax, ay, cw * 0.07, 0, Math.PI * 2);
+  ctx.arc(0, 0, r * 0.56, from, to, !clockwise);
+  ctx.stroke();
+
+  // Arrowhead on the leading end of the sweep.
+  const head = to;
+  const hx = Math.cos(head) * r * 0.56;
+  const hy = Math.sin(head) * r * 0.56;
+  const tangent = head + (clockwise ? Math.PI / 2 : -Math.PI / 2);
+  ctx.fillStyle = withAlpha(palette.ink, 0.72);
+  ctx.beginPath();
+  ctx.moveTo(hx + Math.cos(tangent) * r * 0.26, hy + Math.sin(tangent) * r * 0.26);
+  ctx.lineTo(
+    hx + Math.cos(tangent + 2.4) * r * 0.22,
+    hy + Math.sin(tangent + 2.4) * r * 0.22,
+  );
+  ctx.lineTo(
+    hx + Math.cos(tangent - 2.4) * r * 0.22,
+    hy + Math.sin(tangent - 2.4) * r * 0.22,
+  );
+  ctx.closePath();
   ctx.fill();
+  ctx.restore();
 }
 
 function drawArrow(

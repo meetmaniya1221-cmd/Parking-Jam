@@ -388,10 +388,6 @@ export function meteredLimit(index: number, parSlides: number): number | null {
   return parSlides + slack;
 }
 
-export function isMetered(index: number, parSlides: number): boolean {
-  return meteredLimit(index, parSlides) !== null;
-}
-
 /* ------------------------------------------------------------------ *
  * Specs
  * ------------------------------------------------------------------ */
@@ -463,10 +459,6 @@ export function prefetchLevel(index: number): void {
     .requestIdleCallback;
   if (ric) ric(run);
   else setTimeout(run, 0);
-}
-
-export function clearLevelCache(): void {
-  levelCache.clear();
 }
 
 /* ------------------------------------------------------------------ *

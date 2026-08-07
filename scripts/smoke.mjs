@@ -327,6 +327,70 @@ async function checkMeteredLot(page) {
   await page.waitForTimeout(600);
 }
 
+/**
+ * An abandoned lot has to come back exactly as it was left — same cars, same
+ * places, same slide and bump counts (GDD §14 "the half-solved lot is exactly
+ * as left, engines idling").
+ */
+async function checkResume(page) {
+  await page.evaluate(() => window.__gridlock.jumpTo(35));
+  await page.waitForSelector('.lot__canvas');
+  await page.waitForTimeout(700);
+
+  // Make a handful of real moves, mixing exits and repositions.
+  for (let i = 0; i < 4; i++) {
+    if (await page.evaluate(() => window.__gridlock.wasteAMove())) continue;
+    const exitable = await page.evaluate(() => window.__gridlock.exitable());
+    if (exitable.length === 0) break;
+    await tapVehicle(page, exitable[0]);
+    await page.waitForTimeout(220);
+  }
+  const before = await page.evaluate(() => {
+    const s = window.__gridlock.lotView.state;
+    return {
+      remaining: s.remaining,
+      slides: s.slides,
+      bumps: s.bumps,
+      cars: Array.from({ length: s.x.length }, (_, i) => [s.x[i], s.y[i], s.facing[i], s.gone[i]]),
+    };
+  });
+  if (before.slides === 0) {
+    problems.push('resume: could not make any moves to save');
+    return;
+  }
+
+  await page.locator('.play__headRow .iconBtn').first().click();
+  await page.waitForTimeout(600);
+  await page.screenshot({ path: `${SHOTS}/12-resume-card.png` });
+
+  const resumeCard = page.locator('.card--resume .btn');
+  if (!(await resumeCard.isVisible().catch(() => false))) {
+    problems.push('resume: the map showed no resume card for the abandoned lot');
+    return;
+  }
+  await resumeCard.click();
+  await page.waitForSelector('.lot__canvas');
+  await page.waitForTimeout(800);
+
+  const after = await page.evaluate(() => {
+    const s = window.__gridlock.lotView.state;
+    return {
+      remaining: s.remaining,
+      slides: s.slides,
+      bumps: s.bumps,
+      cars: Array.from({ length: s.x.length }, (_, i) => [s.x[i], s.y[i], s.facing[i], s.gone[i]]),
+    };
+  });
+
+  if (JSON.stringify(before) !== JSON.stringify(after)) {
+    problems.push(
+      `resume: lot came back different (${before.remaining}/${before.slides} → ${after.remaining}/${after.slides})`,
+    );
+  } else {
+    step(`resume restored ${after.remaining} cars, ${after.slides} slides, exactly as left`);
+  }
+}
+
 async function run(page) {
   await page.goto(URL, { waitUntil: 'domcontentloaded' });
   await page.waitForSelector('.lot__canvas');
@@ -384,6 +448,7 @@ async function run(page) {
   await checkInteractions(page);
   await checkKeyboard(page);
   await checkMeteredLot(page);
+  await checkResume(page);
 
   // Night Shift renders through a headlight mask — a whole extra draw path.
   await page.locator('.tab--events').click();
