@@ -6,7 +6,9 @@
  * The scripts in `scripts/` drive real pointer events and read this to assert.
  */
 
-import { exitableVehicles } from './core/sim';
+import { meteredLimit, getLevel } from './core/campaign';
+import { exitableVehicles, probe, resolveMove } from './core/sim';
+import { Dir } from './core/types';
 import { Settings } from './meta/save';
 import { LotView } from './view/lotView';
 
@@ -22,6 +24,10 @@ export interface GridlockDebug {
   jumpTo(index: number): void;
   /** Put the profile into a named state so a journey can start mid-game. */
   seed(patch: SeedPatch): void;
+  /** The slide cap for a level, or null when it is not a Metered Lot. */
+  meteredLimitFor(index: number): number | null;
+  /** Burn one slide on a move that clears nothing. False when none is left. */
+  wasteAMove(): boolean;
   version: string;
 }
 
@@ -54,6 +60,29 @@ const handle: GridlockDebug = {
   },
   seed(): void {
     /* replaced by installDebugHandle */
+  },
+  meteredLimitFor(index: number): number | null {
+    return meteredLimit(index, getLevel(index).parSlides);
+  },
+  wasteAMove(): boolean {
+    const view = handle.lotView;
+    if (!view) return false;
+    const s = view.state;
+    for (let vi = 0; vi < s.x.length; vi++) {
+      if (s.gone[vi]) continue;
+      for (const dir of [s.facing[vi], (s.facing[vi] + 2) % 4] as Dir[]) {
+        const p = probe(s, vi, dir);
+        // A slide that stays on the lot burns a slide without clearing a car.
+        if (p.exitDist < 0 && p.dist > 0) {
+          const move = resolveMove(s, vi, dir, 1);
+          if (move && move.kind !== 'exit') {
+            view.applyDebugMove(move);
+            return true;
+          }
+        }
+      }
+    }
+    return false;
   },
   version: '1.0.0',
 };

@@ -1156,6 +1156,11 @@ export class LotView {
     return out;
   }
 
+  /** Apply a resolved move through the normal commit path. Used by the harness. */
+  applyDebugMove(move: Move): void {
+    this.commit(move);
+  }
+
   /** True when no car can drive off the lot right now. */
   nothingCanLeave(): boolean {
     for (let vi = 0; vi < this.state.x.length; vi++) {

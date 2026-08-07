@@ -524,6 +524,59 @@ body {
   font-weight: 700;
 }
 
+.medals {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.medal {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.medal--bronze {
+  background: rgba(205, 127, 50, 0.14);
+}
+.medal--silver {
+  background: rgba(200, 210, 220, 0.13);
+}
+.medal--gold {
+  background: rgba(255, 209, 102, 0.16);
+}
+
+.medal__icon {
+  font-size: 1.35em;
+}
+
+.medal__text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.medal__name {
+  font-weight: 800;
+  font-size: 0.9em;
+}
+
+.medal__note {
+  color: var(--text-dim);
+  font-size: 0.78em;
+  font-variant-numeric: tabular-nums;
+}
+
+.medal__tier {
+  font-size: 1.15em;
+  opacity: 0.8;
+}
+
 .signal {
   display: flex;
   gap: 5px;
@@ -821,6 +874,22 @@ body {
   font-size: 0.82em;
   font-weight: 700;
   font-variant-numeric: tabular-nums;
+}
+
+.meter {
+  align-self: center;
+  padding: 4px 12px;
+  border-radius: 999px;
+  background: rgba(255, 209, 102, 0.16);
+  color: var(--lemon);
+  font-size: 0.82em;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.meter--low {
+  background: rgba(255, 111, 97, 0.2);
+  color: var(--coral-light);
 }
 
 .ambulance--urgent {

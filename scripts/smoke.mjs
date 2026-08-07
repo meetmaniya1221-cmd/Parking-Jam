@@ -241,6 +241,74 @@ async function checkKeyboard(page) {
   await page.screenshot({ path: `${SHOTS}/10-keyboard.png` });
 }
 
+/**
+ * Metered Lots are the only fail state in the game. Run one out of slides and
+ * check the save-me offer appears, that declining lands on a breather rather
+ * than a loss screen, and that accepting hands back three slides.
+ */
+async function checkMeteredLot(page) {
+  const target = await page.evaluate(() => {
+    // Ask the campaign which nearby jam is actually metered.
+    for (let i = 45; i < 200; i++) {
+      const limit = window.__gridlock.meteredLimitFor(i);
+      if (limit !== null) return i;
+    }
+    return -1;
+  });
+  if (target < 0) {
+    problems.push('metered: no metered lot found in the sequence');
+    return;
+  }
+
+  await page.evaluate((n) => window.__gridlock.jumpTo(n), target);
+  await page.waitForSelector('.lot__canvas');
+  await page.waitForTimeout(700);
+
+  if (!(await page.locator('.meter').isVisible().catch(() => false))) {
+    problems.push(`metered: L${target} showed no slide meter`);
+    return;
+  }
+  step(`metered lot L${target}: ${await page.locator('.meter').innerText()}`);
+
+  // Burn the meter. A packed lot runs out of repositioning room quickly, so
+  // alternate: shuffle while there is room, otherwise send a car home to make
+  // some. The meter only allows a few slides above par, so this converges.
+  let wasted = 0;
+  for (let i = 0; i < 80; i++) {
+    if (await page.locator('.sheet--offer').isVisible().catch(() => false)) break;
+    const state = await lotState(page);
+    if (!state || state.remaining === 0) break;
+    if (await page.evaluate(() => window.__gridlock.wasteAMove())) {
+      wasted++;
+    } else {
+      const exitable = await page.evaluate(() => window.__gridlock.exitable());
+      if (exitable.length === 0) break;
+      await tapVehicle(page, exitable[0]);
+    }
+    await page.waitForTimeout(160);
+  }
+  step(`burned ${wasted} spare slides`);
+
+  const offered = await page.locator('.sheet--offer').isVisible().catch(() => false);
+  if (!offered) {
+    problems.push('metered: running out of slides raised no save-me offer');
+    return;
+  }
+  await assertSingleModal(page, 'metered save-me');
+  await page.screenshot({ path: `${SHOTS}/11-save-me.png` });
+
+  await page.locator('.sheet--offer .btn--ghost').click();
+  await page.waitForTimeout(500);
+  const sheet = await page.locator('.sheet__title').first().innerText();
+  if (!/meter ran out/i.test(sheet)) {
+    problems.push(`metered: declining showed "${sheet}" instead of the one-for-the-road offer`);
+  } else {
+    step('save-me declined, breather offered');
+  }
+  await page.locator('.sheet .btn--primary').first().click();
+  await page.waitForTimeout(600);
+}
+
 async function run(page) {
   await page.goto(URL, { waitUntil: 'domcontentloaded' });
   await page.waitForSelector('.lot__canvas');
@@ -297,6 +365,7 @@ async function run(page) {
 
   await checkInteractions(page);
   await checkKeyboard(page);
+  await checkMeteredLot(page);
 
   // Night Shift renders through a headlight mask — a whole extra draw path.
   await page.locator('.tab--events').click();

@@ -361,6 +361,38 @@ function modifiersFor(index: number, band: Band, pattern: string, dims: Dimensio
 }
 
 /* ------------------------------------------------------------------ *
+ * Metered Lots — the one opt-in constraint mode (GDD §4, §8)
+ * ------------------------------------------------------------------ */
+
+/**
+ * A Metered Lot caps the number of slides. It is the only place in the game
+ * with a real fail state, and the only place the save-me offer exists — which
+ * is exactly why it is held back until the player has mastered the unlimited
+ * mode, never lands on a skill-check, and never shares a lot with a mechanic
+ * in its first five outings.
+ */
+export function meteredLimit(index: number, parSlides: number): number | null {
+  if (index < GATES.meteredLots) return null;
+  if (patternIntroducedAt(index)) return null;
+  const band = bandForLevel(index);
+  // Skill-checks are never Metered, and neither are showcase finales.
+  if (band === Band.Showcase) return null;
+  if (hashString(`metered:${index}`) % 7 !== 0) return null;
+
+  // A new mechanic gets five clean appearances before it may be constrained.
+  for (const gate of [GATES.oil, GATES.vips, GATES.ambulances, GATES.roundabouts, GATES.gates]) {
+    if (index >= gate && index < gate + 5) return null;
+  }
+
+  const slack = band === Band.Easy ? 4 : band === Band.Hard ? 2 : 3;
+  return parSlides + slack;
+}
+
+export function isMetered(index: number, parSlides: number): boolean {
+  return meteredLimit(index, parSlides) !== null;
+}
+
+/* ------------------------------------------------------------------ *
  * Specs
  * ------------------------------------------------------------------ */
 

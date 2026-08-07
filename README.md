@@ -72,12 +72,26 @@ Everything is synthesised at runtime. Three buses with independent toggles, per-
 
 ### `src/meta` — the city
 
-Districts, seven projects each with costs that escalate by district index, City Income capped at four hours, Mystery Trunks with published odds, streaks that pause rather than reset, the Garage, the Dispatch Board, the City Pass. Saves are versioned and defensively migrated: an older save is folded onto a fresh one so nothing is ever missing, and a hand-edited one is repaired without taking value away.
+Districts, seven projects each with costs that escalate by district index, City Income capped at four hours, Mystery Trunks with published odds, streaks that pause rather than reset, the Garage, the Dispatch Board, the City Pass, and Service Medals as the slow always-advancing meter behind the daily loop. Saves are versioned and defensively migrated: an older save is folded onto a fresh one so nothing is ever missing, and a hand-edited one is repaired without taking value away.
+
+### Modes
+
+The campaign is the game; the rest are appointments.
+
+| Mode | Where | What it is |
+|---|---|---|
+| Campaign | 320 jams, twelve districts | Unlimited slides, no fail state. |
+| Metered Lot | Sprinkled from L45 | The only fail state, and the only save-me. Capped slides, always with slack above par, never on a mechanic's first five outings and never on a skill-check. |
+| Rush Hour | Daily | One authored hard jam, one attempt, the same for everyone. |
+| Cold Cases | From L70 | Every retired daily, replayable and untimed. |
+| Night Shift | Tuesdays | The same reads by headlight only. 1.5× Miles. |
+| Overtime Shifts | From L80 | A rotating set of ten rated jams a day, endlessly. |
 
 ## Design commitments that are enforced in code, not just intended
 
 - **Every jam is solvable unaided.** Guaranteed by construction in the generator, and re-verified for all 320 levels on every test run.
 - **A mistake costs nothing.** Bumps are free and diagnostic. One-way arrows and oil slicks make some slides irreversible, so there is an unlimited **Undo**, and when a lot really has been knotted for good the game notices and says so rather than letting the player grind at it.
+- **A session never ends on a failure.** Running a Metered Lot dry offers the save-me; declining it hands the player a guaranteed-solvable breather, not a loss screen.
 - **Never more than one modal deep.** The win screen does not stack an offer on top of itself; the pinch offer and the interstitial are mutually exclusive, and the smoke test fails the build if two overlays are ever open at once.
 - **Interstitials, exactly as specified.** Never before level 12, only on the way out of a win screen, ninety-second cooldown that lengthens after the sixth impression of a session, hard cap of twelve, and any purchase buys a twenty-four-hour holiday. There is no ad network here — the placements are honest simulations, so the guardrails around them are real and testable.
 - **Nothing owned is ever removed.** Keys and tickets above their cap convert to Coins instead of evaporating. A broken streak pauses at its last milestone.
@@ -89,12 +103,16 @@ Vehicle identity is never colour-only: class silhouettes differ, facing reads fr
 
 ## Testing
 
-`npm test` runs 109 unit tests: sim geometry and every modifier, solver optimality and dead-end detection, the full 320-level campaign audited for validity, solvability, par, band mix, gate compliance and difficulty scaling, plus the economy and save layers.
+`npm test` runs 116 unit tests: sim geometry and every modifier, solver optimality and dead-end detection, the full 320-level campaign audited for validity, solvability, par, band mix, gate compliance and difficulty scaling, plus the economy, medals, Metered-Lot gating and save layers.
 
-`npm run smoke` is the one that catches what unit tests cannot. It boots the real game in Chromium at phone resolution, clears levels by dispatching genuine pointer events, drags a blocked car to check it bumps rather than escapes, undoes a slide, opens a hint, plays a Night Shift lot, walks every meta screen, and fails on any console error, page exception, failed request, stacked modal or empty screen. It writes screenshots to `/tmp/gridlock-shots` for eyeballing.
+`npm run smoke` is the one that catches what unit tests cannot. It boots the real game in Chromium at phone resolution, clears levels by dispatching genuine pointer events, drags a blocked car to check it bumps rather than escapes, undoes a slide, opens a hint, plays a Night Shift lot, runs a Metered Lot dry to check the save-me appears and that declining lands on a breather, plays a level with the keyboard alone, walks every meta screen, and fails on any console error, page exception, failed request, stacked modal or empty screen.
+
+`npm run journey` goes the long way round: it restores two districts through the UI, watches the timelapse, collects capped income, builds a landmark, buys and equips a livery, then screenshots every accessibility mode and three viewports down to 320px, failing on any sideways scroll. `npm run perf` reports frame times.
+
+Both write screenshots to `/tmp/gridlock-shots` for eyeballing.
 
 `window.__gridlock` exposes the live sim for that harness — which car can leave, where a cell lands on screen, and a `jumpTo(level)` that goes through the app rather than racing the save file.
 
 ## What is not here
 
-This is the game, not the service. There is no backend, so anything that needs one is either absent or honestly labelled: Rush Hour shows a clear-rate *estimated from the jam's own measured shape* rather than a fabricated community figure, leaderboards and friends are out, and the ad placements are simulations. Cloud save, LiveOps tooling, attribution and the analytics pipeline are service-side concerns the design document covers and this build does not pretend to have.
+This is the game, not the service. There is no backend, so anything that needs one is either absent or honestly labelled: Rush Hour shows a clear-rate *estimated from the jam's own measured shape* rather than a fabricated community figure, and the ad placements are simulations. The LiveOps modes that are fundamentally social — Ambulance Run leagues, the Motorcade community meter, Depot Crews, ghost solves, friends' Rush Hour stamps — need a server to mean anything, so they are not stubbed in. Cloud save, remote config, attribution and the analytics pipeline are the same story: covered by the design document, out of scope for a client.

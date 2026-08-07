@@ -46,6 +46,7 @@ import {
 } from '../meta/economy';
 import { DISTRICTS, LANDMARKS, PROJECTS_PER_DISTRICT } from '../meta/districts';
 import { findHorn, findLivery, HORNS, LIVERY_SETS, RIDES } from '../meta/garage';
+import { claimMedal, commissionerRank, MedalTier, MEDALS, medalProgress } from '../meta/medals';
 import { BoosterId, dayNumber, dayStamp } from '../meta/save';
 import { GameStore } from '../meta/store';
 import { button, el, formatHours, formatNumber, pill, progressBar } from './dom';
@@ -69,7 +70,7 @@ export interface Screen {
 
 export interface ScreenHost {
   playLevel(index: number): void;
-  playSpecial(kind: 'rush' | 'overtime' | 'night', index?: number): void;
+  playSpecial(kind: 'rush' | 'overtime' | 'night' | 'coldCase', index?: number): void;
   refreshChrome(): void;
 }
 
@@ -446,6 +447,51 @@ export function createDepotScreen({ store, audio, host }: Deps): Screen {
         nodes.push(section('Dispatch Board', tasks));
       }
 
+      // Service Medals
+      const rank = commissionerRank(s);
+      const ribbons = el('div', { class: 'medals' });
+      for (const def of MEDALS) {
+        const progress = medalProgress(s, def);
+        ribbons.appendChild(
+          el(
+            'div',
+            { class: `medal medal--${progress.tier ?? 'none'}` },
+            el('div', { class: 'medal__icon', text: def.icon }),
+            el(
+              'div',
+              { class: 'medal__text' },
+              el('div', { class: 'medal__name', text: def.name }),
+              progressBar(progress.fraction, 'bar--lemon'),
+              el('div', {
+                class: 'medal__note',
+                text:
+                  progress.next === null
+                    ? `${formatNumber(progress.value)} · gold`
+                    : `${formatNumber(progress.value)} / ${formatNumber(progress.next)}`,
+              }),
+            ),
+            progress.unclaimed.length > 0
+              ? button('Collect', {
+                  variant: 'primary',
+                  onTap: () => {
+                    const paid = store.update((state) => claimMedal(state, def.id));
+                    audio.uiConfirm();
+                    toast(`+${paid} Medallions`, '🎖️');
+                    host.refreshChrome();
+                    refresh();
+                  },
+                })
+              : el('span', { class: 'medal__tier', text: tierMark(progress.tier) }),
+          ),
+        );
+      }
+      nodes.push(
+        section(
+          `Service Medals · Commissioner rank ${rank.rank}`,
+          el('div', { class: 'card' }, progressBar(rank.fraction, 'bar--mint'), ribbons),
+        ),
+      );
+
       // Streaks
       const lamps = el('div', { class: 'signal' });
       for (let i = 0; i < 7; i++) {
@@ -524,6 +570,10 @@ export function createDepotScreen({ store, audio, host }: Deps): Screen {
       window.clearInterval(ticker);
     },
   };
+}
+
+function tierMark(tier: MedalTier | null): string {
+  return tier === 'gold' ? '🥇' : tier === 'silver' ? '🥈' : tier === 'bronze' ? '🥉' : '·';
 }
 
 function boosterIcon(id: BoosterId): string {
@@ -822,6 +872,33 @@ export function createEventsScreen({ store, audio, host }: Deps): Screen {
           }),
         ),
       );
+
+      // Cold Cases — yesterday's Rush Hour and the week before it, untimed.
+      if (isUnlocked('goldPlates', s.progress.highest)) {
+        const cases = el('div', { class: 'shifts' });
+        for (let back = 1; back <= 5; back++) {
+          const past = day - back;
+          cases.appendChild(
+            el(
+              'div',
+              { class: 'shift' },
+              el('div', { class: 'shift__tag', text: rushHourName(past) }),
+              el('div', { class: 'shift__note', text: `${back} day${back === 1 ? '' : 's'} ago` }),
+              button('Reopen', {
+                variant: 'ghost',
+                onTap: () => host.playSpecial('coldCase', back),
+              }),
+            ),
+          );
+        }
+        nodes.push(
+          section(
+            'Cold Cases',
+            el('p', { class: 'empty', text: 'Every retired daily, replayable and untimed.' }),
+            cases,
+          ),
+        );
+      }
 
       // Night Shift — Tuesdays, and previewable any day.
       const isTuesday = new Date().getDay() === 2;

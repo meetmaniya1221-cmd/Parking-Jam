@@ -232,8 +232,18 @@ export class App {
     this.openPlay({ levelIndex: clamped, level: getLevel(clamped) });
   }
 
-  playSpecial(kind: 'rush' | 'overtime' | 'night', index = 0): void {
+  playSpecial(kind: 'rush' | 'overtime' | 'night' | 'coldCase', index = 0): void {
     const day = dayNumber(Date.now());
+    if (kind === 'coldCase') {
+      const past = day - Math.max(1, index);
+      this.openPlay({
+        levelIndex: 0,
+        level: rushHourJam(past),
+        mode: 'overtime',
+        title: `${rushHourName(past)} · cold case`,
+      });
+      return;
+    }
     if (kind === 'rush') {
       this.openPlay({
         levelIndex: 0,

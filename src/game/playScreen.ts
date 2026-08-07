@@ -12,6 +12,7 @@ import {
   chapterPosition,
   GATES,
   getLevel,
+  meteredLimit,
   patternIntroducedAt,
   PATTERNS,
   prefetchLevel,
@@ -29,6 +30,7 @@ import { button, el, formatNumber } from '../ui/dom';
 import {
   showInterstitial,
   showRewardedOffer,
+  showSheet,
   showTrunk,
   showWinScreen,
   toast,
@@ -70,6 +72,10 @@ interface BoosterButton {
 /** Cars in the lot above which the dead-end check is deferred to idle time. */
 const DEAD_END_INLINE_LIMIT = 12;
 
+/** Slides the save-me grants, and what it costs in Medallions (GDD §5). */
+const SAVE_ME_MOVES = 3;
+const SAVE_ME_PRICE = 15;
+
 export class PlayScreen {
   readonly root: HTMLElement;
   private readonly canvas: HTMLCanvasElement;
@@ -98,12 +104,16 @@ export class PlayScreen {
   private titleNode!: HTMLElement;
   private patternNode!: HTMLElement;
   private ambulanceNode!: HTMLElement;
+  private meterNode!: HTMLElement;
   private coachNode!: HTMLElement;
   private boosterButtons: BoosterButton[] = [];
   private undoButton!: HTMLButtonElement;
   private deadEndWarned = false;
   private paused = false;
   private ambulanceRemaining = 0;
+  private moveLimit: number | null = null;
+  private bonusMoves = 0;
+  private outOfMoves = false;
   private deadEndTimer = 0;
 
   private readonly mode: PlayMode;
@@ -144,6 +154,7 @@ export class PlayScreen {
     );
     this.bumpNode = el('span', { class: 'play__bumps', text: '0 bumps' });
     this.ambulanceNode = el('div', { class: 'ambulance', hidden: true });
+    this.meterNode = el('div', { class: 'meter', hidden: true });
 
     return el(
       'header',
@@ -168,6 +179,7 @@ export class PlayScreen {
         }),
       ),
       el('div', { class: 'play__meters' }, this.counterNode, this.bumpNode),
+      this.meterNode,
       this.ambulanceNode,
     );
   }
@@ -229,6 +241,9 @@ export class PlayScreen {
       onSlide: () => {
         this.dismissCoach(true);
         this.scheduleDeadEndCheck();
+        if (this.movesLeft() <= 0 && this.view && this.view.state.remaining > 0) {
+          void this.onOutOfMoves();
+        }
       },
       onCleared: () => void this.onCleared(),
       onLastCar: () => this.onLastCar(),
@@ -249,6 +264,11 @@ export class PlayScreen {
     this.audio.startBed();
 
     setDebugLot(this.view, this.canvas, this.mode === 'campaign' ? this.levelIndex : 0);
+    this.moveLimit =
+      this.mode === 'campaign' ? meteredLimit(this.levelIndex, this.level.parSlides) : null;
+    this.bonusMoves = 0;
+    this.outOfMoves = false;
+
     this.syncHud();
     this.startAmbulanceWindow();
     this.scheduleCoach();
@@ -348,6 +368,8 @@ export class PlayScreen {
     this.ambulancesRescued = 0;
     this.finished = false;
     this.deadEndWarned = false;
+    this.bonusMoves = 0;
+    this.outOfMoves = false;
     this.store.update((s) => {
       if (this.mode === 'campaign' && s.resume?.levelIndex === this.levelIndex) s.resume = null;
     });
@@ -386,6 +408,15 @@ export class PlayScreen {
     this.patternNode.textContent = `${place} · ${pattern ? pattern.label : bandLabel(band)}`;
 
     this.audio.setBedIntensity(total === 0 ? 0 : 1 - remaining / total);
+
+    if (this.moveLimit === null) {
+      this.meterNode.hidden = true;
+    } else {
+      const left = this.movesLeft();
+      this.meterNode.hidden = false;
+      this.meterNode.textContent = `🅿️ ${left} ${left === 1 ? 'slide' : 'slides'} left`;
+      this.meterNode.classList.toggle('meter--low', left <= 2);
+    }
 
     this.undoButton.disabled = !this.view.canUndo();
     this.undoButton.classList.toggle('booster--empty', !this.view.canUndo());
@@ -473,6 +504,71 @@ export class PlayScreen {
 
   private onLastCar(): void {
     this.root.classList.add('play--finale');
+  }
+
+  private movesLeft(): number {
+    if (this.moveLimit === null || !this.view) return Number.POSITIVE_INFINITY;
+    return Math.max(0, this.moveLimit + this.bonusMoves - this.view.state.slides);
+  }
+
+  /**
+   * The meter ran out. This is the only fail state in the game, and one the
+   * player opted into by reaching a Metered Lot — so the offer is a rescue at
+   * peak motivation, and declining it never ends the session on a loss.
+   */
+  private async onOutOfMoves(): Promise<void> {
+    if (!this.view || this.finished || this.outOfMoves) return;
+    this.outOfMoves = true;
+    this.view.setInteractive(false);
+    this.audio.softMiss();
+
+    const canPay = this.store.state.wallet.medallions >= SAVE_ME_PRICE;
+    const accepted = await showRewardedOffer(this.audio, {
+      title: 'Out of slides',
+      reward: `+${SAVE_ME_MOVES} slides, and the knot is almost open.`,
+      note: canPay
+        ? `Or spend ${SAVE_ME_PRICE} Medallions from the Depot.`
+        : 'Only in Metered Lots. Never in the base game.',
+    });
+
+    if (accepted) {
+      this.grantSaveMe();
+      return;
+    }
+    this.endMeteredAttempt();
+  }
+
+  private grantSaveMe(): void {
+    this.bonusMoves += SAVE_ME_MOVES;
+    this.outOfMoves = false;
+    this.view?.setInteractive(true);
+    this.syncHud();
+    toast(`+${SAVE_ME_MOVES} slides.`, '🅿️');
+  }
+
+  /**
+   * Never end a session on a failure (GDD §2 Peak-End): the way out of a lost
+   * Metered attempt is a guaranteed-solvable breather, offered as the one tap.
+   */
+  private endMeteredAttempt(): void {
+    showSheet({
+      eyebrow: 'Metered Lot',
+      title: 'The meter ran out.',
+      body: 'Nothing was taken and the jam keeps its record. One for the road?',
+      confirmLabel: 'One for the road',
+      cancelLabel: 'Try again',
+      onConfirm: () => this.host.playLevel(this.nearbyEasyLevel()),
+    });
+    // Dismissing the sheet leaves the player on a fresh attempt at this lot.
+    this.restart();
+  }
+
+  /** The nearest breather behind the current jam — always solvable, always kind. */
+  private nearbyEasyLevel(): number {
+    for (let i = this.levelIndex - 1; i > Math.max(1, this.levelIndex - 12); i--) {
+      if (bandForLevel(i) === Band.Easy) return i;
+    }
+    return Math.max(1, this.levelIndex - 1);
   }
 
   private undo(): void {

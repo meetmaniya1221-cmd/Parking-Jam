@@ -142,6 +142,9 @@ export interface PlayerState {
     attempts: number;
   };
 
+  /** Service Medal tiers already collected, keyed by medal id. */
+  medals: Record<string, string[]>;
+
   pass: {
     season: number;
     claimedTiers: number[];
@@ -257,6 +260,7 @@ export function createPlayerState(now: number = Date.now()): PlayerState {
       dispatchBonusClaimed: false,
     },
     rush: { lastAttemptDay: '', clears: 0, attempts: 0 },
+    medals: {},
     pass: { season: 1, claimedTiers: [], premium: false },
     stats: {
       jamsCleared: 0,
@@ -321,6 +325,7 @@ export function migrate(raw: unknown, now: number = Date.now()): PlayerState {
     income: { ...base.income, ...saved.income },
     daily: { ...base.daily, ...saved.daily, dispatch: saved.daily?.dispatch ?? [] },
     rush: { ...base.rush, ...saved.rush },
+    medals: saved.medals ?? {},
     pass: { ...base.pass, ...saved.pass, claimedTiers: saved.pass?.claimedTiers ?? [] },
     stats: { ...base.stats, ...saved.stats },
     ads: { ...base.ads, ...saved.ads },

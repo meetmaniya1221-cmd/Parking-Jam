@@ -1,5 +1,10 @@
 import { beforeEach, describe, expect, it } from 'vitest';
-import { bandForLevel } from '../src/core/campaign';
+import {
+  bandForLevel,
+  meteredLimit,
+  patternIntroducedAt,
+  TOTAL_LEVELS,
+} from '../src/core/campaign';
 import { Rng } from '../src/core/rng';
 import {
   advanceGreenLight,
@@ -37,7 +42,9 @@ import {
   TRUNK_ODDS,
   useBooster,
 } from '../src/meta/economy';
+import { Band } from '../src/core/types';
 import { DISTRICTS, LANDMARKS, PROJECTS_PER_DISTRICT } from '../src/meta/districts';
+import { claimMedal, commissionerRank, MEDAL_PAYOUT, MEDALS, medalProgress } from '../src/meta/medals';
 import { LIVERY_SETS } from '../src/meta/garage';
 import { createPlayerState, PlayerState } from '../src/meta/save';
 
@@ -383,5 +390,76 @@ describe('coin pinch', () => {
     state.progress.highest = 2;
     state.wallet.coins = 0;
     expect(atCoinPinch(state)).toBe(false);
+  });
+});
+
+describe('service medals', () => {
+  it('advances a ribbon through its tiers and pays each once', () => {
+    const exits = MEDALS.find((m) => m.id === 'exits')!;
+    expect(medalProgress(state, exits).tier).toBeNull();
+
+    state.stats.totalExits = 1200;
+    const progress = medalProgress(state, exits);
+    expect(progress.tier).toBe('silver');
+    expect(progress.unclaimed).toEqual(['bronze', 'silver']);
+
+    const paid = claimMedal(state, exits.id);
+    expect(paid).toBe(MEDAL_PAYOUT.bronze + MEDAL_PAYOUT.silver);
+    expect(state.wallet.medallions).toBe(paid);
+    expect(claimMedal(state, exits.id)).toBe(0); // never twice
+  });
+
+  it('caps at gold and reports a full bar', () => {
+    state.stats.cleanExits = 99_999;
+    const clean = MEDALS.find((m) => m.id === 'clean')!;
+    const progress = medalProgress(state, clean);
+    expect(progress.tier).toBe('gold');
+    expect(progress.next).toBeNull();
+    expect(progress.fraction).toBe(1);
+  });
+
+  it('fills the commissioner rank from every ribbon at once', () => {
+    expect(commissionerRank(state).rank).toBe(0);
+    state.stats.totalExits = 99_999;
+    state.stats.cleanExits = 99_999;
+    state.stats.jamsCleared = 99_999;
+    expect(commissionerRank(state).rank).toBeGreaterThan(0);
+  });
+});
+
+describe('metered lots', () => {
+  it('never meters a jam before the mode unlocks', () => {
+    for (let i = 1; i < 45; i++) expect(meteredLimit(i, 8), `L${i}`).toBeNull();
+  });
+
+  it('never meters a pattern introduction or a showcase finale', () => {
+    for (let i = 45; i <= TOTAL_LEVELS; i++) {
+      const limit = meteredLimit(i, 8);
+      if (limit === null) continue;
+      expect(patternIntroducedAt(i), `L${i} introduces a mechanic`).toBeNull();
+      expect(bandForLevel(i), `L${i}`).not.toBe(Band.Showcase);
+    }
+  });
+
+  it('gives every mechanic five unconstrained outings first', () => {
+    for (const gate of [26, 31, 37, 52, 60]) {
+      for (let i = gate; i < gate + 5; i++) {
+        expect(meteredLimit(i, 8), `L${i} is within five of gate ${gate}`).toBeNull();
+      }
+    }
+  });
+
+  it('always leaves slack above par, more of it on a breather', () => {
+    let metered = 0;
+    for (let i = 45; i <= TOTAL_LEVELS; i++) {
+      const limit = meteredLimit(i, 10);
+      if (limit === null) continue;
+      metered++;
+      expect(limit).toBeGreaterThan(10);
+      expect(limit).toBeLessThanOrEqual(14);
+    }
+    // The mode should appear regularly without taking over the sequence.
+    expect(metered).toBeGreaterThan(10);
+    expect(metered / (TOTAL_LEVELS - 44)).toBeLessThan(0.2);
   });
 });
