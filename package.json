@@ -2,7 +2,7 @@
   "name": "gridlock-city",
   "version": "1.0.0",
   "private": true,
-  "description": "Gridlock City — a traffic-unblock puzzle game. Untangle the jam, rebuild the city.",
+  "description": "Gridlock City \u2014 a traffic-unblock puzzle game. Untangle the jam, rebuild the city.",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -11,7 +11,9 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "verify": "npm run typecheck && npm run test && npm run build"
+    "verify": "npm run typecheck && npm run test && npm run build",
+    "smoke": "node scripts/smoke.mjs",
+    "perf": "node scripts/perf.mjs"
   },
   "devDependencies": {
     "playwright": "^1.49.0",

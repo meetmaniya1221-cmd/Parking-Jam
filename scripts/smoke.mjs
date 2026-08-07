@@ -128,6 +128,119 @@ async function clearLot(page, label) {
   return lotState(page);
 }
 
+/** Drag a car along its own axis with a real pointer gesture. */
+async function dragVehicle(page, vi, cells) {
+  const path = await page.evaluate(
+    ({ index, n }) => {
+      const g = window.__gridlock;
+      const cam = g.lotView.camera;
+      const s = g.lotView.state;
+      const rect = g.canvas.getBoundingClientRect();
+      const f = s.facing[index];
+      const dx = [0, 1, 0, -1][f];
+      const dy = [-1, 0, 1, 0][f];
+      const from = {
+        x: rect.left + cam.ox + (s.x[index] + 0.5) * cam.cw,
+        y: rect.top + cam.oy + (s.y[index] + 0.5) * cam.ch,
+      };
+      return { from, to: { x: from.x + dx * n * cam.cw, y: from.y + dy * n * cam.ch } };
+    },
+    { index: vi, n: cells },
+  );
+  await page.mouse.move(path.from.x, path.from.y);
+  await page.mouse.down();
+  for (let i = 1; i <= 6; i++) {
+    await page.mouse.move(
+      path.from.x + ((path.to.x - path.from.x) * i) / 6,
+      path.from.y + ((path.to.y - path.from.y) * i) / 6,
+    );
+    await page.waitForTimeout(24);
+  }
+  await page.mouse.up();
+  await page.waitForTimeout(320);
+}
+
+/** Exercise dragging, bumping and undo on a mid-game lot. */
+async function checkInteractions(page) {
+  await page.evaluate(() => window.__gridlock.jumpTo(40));
+  await page.waitForSelector('.lot__canvas');
+  await page.waitForTimeout(700);
+
+  const before = await lotState(page);
+  // Pick a car that cannot leave; dragging it should reposition or bump, never exit.
+  const stuck = await page.evaluate(() => {
+    const g = window.__gridlock;
+    const open = new Set(g.exitable());
+    const s = g.lotView.state;
+    for (let i = 0; i < s.x.length; i++) if (!s.gone[i] && !open.has(i)) return i;
+    return -1;
+  });
+  if (stuck < 0) {
+    problems.push('interactions: every car could leave, nothing to test against');
+    return;
+  }
+
+  await dragVehicle(page, stuck, 2);
+  const afterDrag = await lotState(page);
+  if (afterDrag.remaining !== before.remaining) {
+    problems.push('interactions: a blocked car left the lot on a drag');
+  }
+  if (afterDrag.slides === before.slides && afterDrag.bumps === before.bumps) {
+    problems.push('interactions: dragging a blocked car did nothing at all');
+  }
+  step(`drag: ${afterDrag.slides - before.slides} slides, ${afterDrag.bumps - before.bumps} bumps`);
+  await page.screenshot({ path: `${SHOTS}/07-drag.png` });
+
+  if (afterDrag.slides > before.slides) {
+    const undo = await page.locator('.booster--undo');
+    if (await undo.isDisabled()) {
+      problems.push('interactions: undo stayed disabled after a slide');
+    } else {
+      await undo.click();
+      await page.waitForTimeout(400);
+      const undone = await lotState(page);
+      if (undone.slides !== before.slides) {
+        problems.push(`interactions: undo left ${undone.slides} slides, expected ${before.slides}`);
+      } else {
+        step('undo restored the previous position');
+      }
+    }
+  }
+
+  // The Dispatcher hint must always name a car that can actually leave.
+  await page.locator('.boosters .btn').nth(2).click();
+  await page.waitForTimeout(500);
+  await page.screenshot({ path: `${SHOTS}/08-hint.png` });
+}
+
+/** The lot must be playable with a keyboard alone. */
+async function checkKeyboard(page) {
+  await page.evaluate(() => window.__gridlock.jumpTo(12));
+  await page.waitForSelector('.lot__canvas');
+  await page.waitForTimeout(700);
+  await page.locator('.lot__canvas').focus();
+
+  const before = await lotState(page);
+  // Step the cursor onto a car that can actually leave, then drive it.
+  const target = await page.evaluate(() => window.__gridlock.exitable()[0] ?? 0);
+  for (let i = 0; i < 40; i++) {
+    if ((await page.evaluate(() => window.__gridlock.lotView.selectedVehicle)) === target) break;
+    await page.keyboard.press('ArrowRight');
+  }
+  await page.keyboard.press('Enter');
+  await page.waitForTimeout(600);
+
+  const after = await lotState(page);
+  if (after.remaining !== before.remaining - 1) {
+    problems.push(
+      `keyboard: Enter did not drive a car out (${before.remaining} → ${after.remaining})`,
+    );
+  } else {
+    step('keyboard play drove a car off the lot');
+  }
+  await page.screenshot({ path: `${SHOTS}/10-keyboard.png` });
+}
+
 async function run(page) {
   await page.goto(URL, { waitUntil: 'domcontentloaded' });
   await page.waitForSelector('.lot__canvas');
@@ -181,6 +294,22 @@ async function run(page) {
   await page.locator('.sheet--settings .btn--primary').click();
   await page.waitForTimeout(200);
   step('settings opened and closed');
+
+  await checkInteractions(page);
+  await checkKeyboard(page);
+
+  // Night Shift renders through a headlight mask — a whole extra draw path.
+  await page.locator('.tab--events').click();
+  await page.waitForTimeout(400);
+  await page.locator('.card--night .btn').click();
+  await page.waitForSelector('.lot__canvas');
+  await page.waitForTimeout(800);
+  await page.screenshot({ path: `${SHOTS}/09-night.png` });
+  const night = await lotState(page);
+  if (!night) problems.push('night shift failed to load');
+  else step(`night shift: ${night.total} cars`);
+  await page.locator('.play__headRow .iconBtn').first().click();
+  await page.waitForTimeout(400);
 
   // Deep levels exercise the generator, larger grids and every modifier.
   for (const target of [64, 120, 200, 300]) {

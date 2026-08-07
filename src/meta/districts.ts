@@ -194,14 +194,6 @@ export const PROJECTS_PER_DISTRICT = PROJECT_WEIGHTS.length;
  */
 export const ENDOWED_PROJECTS: Readonly<Record<number, number>> = { 0: 4, 1: 2 };
 
-export function districtIncomeRate(district: number): number {
-  return DISTRICTS[district]?.incomeRate ?? 0;
-}
-
-export function totalProjectCost(district: number): number {
-  return DISTRICTS[district].projects.reduce((a, p) => a + p.cost, 0);
-}
-
 /* ------------------------------------------------------------------ *
  * Landmarks — the trophy case (GDD §10)
  * ------------------------------------------------------------------ */
@@ -274,7 +266,3 @@ export const LANDMARKS: readonly LandmarkDef[] = [
     plaque: 'The city, un-jammed, seen from the top.',
   },
 ];
-
-export function landmarksForDistrict(district: number): LandmarkDef[] {
-  return LANDMARKS.filter((l) => l.district === district);
-}

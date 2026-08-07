@@ -7,7 +7,7 @@
  * without a clock.
  */
 
-import { bandForLevel, chapterPosition, GATES, levelsInDistrict } from '../core/campaign';
+import { bandForLevel, chapterPosition, GATES } from '../core/campaign';
 import { Rng } from '../core/rng';
 import { Band } from '../core/types';
 import { DISTRICTS, LANDMARKS, PROJECTS_PER_DISTRICT } from './districts';
@@ -192,7 +192,6 @@ export interface ClearInput {
 export interface ClearReward {
   coins: number;
   miles: number;
-  medallions: number;
   blueprints: number;
   cleanExit: boolean;
   goldPlate: boolean;
@@ -200,7 +199,7 @@ export interface ClearReward {
   keysEarned: number;
   trunkRewards: TrunkReward[];
   districtIndex: number;
-  districtJustCompleted: boolean;
+  /** True on a chapter finale — the showcase jam that closes a district. */
   chapterComplete: boolean;
 }
 
@@ -230,7 +229,6 @@ export function registerClear(state: PlayerState, input: ClearInput): ClearRewar
   state.wallet.coins += coins;
   state.wallet.miles += miles;
 
-  let medallions = 0;
   let blueprints = 0;
   // Showcase finales pay a Blueprint so the landmark cadence is play-driven.
   if (band === Band.Showcase && !prior) {
@@ -277,11 +275,9 @@ export function registerClear(state: PlayerState, input: ClearInput): ClearRewar
   if (cleanExit) advanceDispatch(state, 'clean', 1);
   if (input.ambulancesRescued > 0) advanceDispatch(state, 'ambulance', input.ambulancesRescued);
 
-  const districtJustCompleted = false; // funding, not clearing, completes a district
   return {
     coins,
     miles,
-    medallions,
     blueprints,
     cleanExit,
     goldPlate,
@@ -289,8 +285,7 @@ export function registerClear(state: PlayerState, input: ClearInput): ClearRewar
     keysEarned,
     trunkRewards,
     districtIndex: district,
-    districtJustCompleted,
-    chapterComplete: pos === size - 1 && input.levelIndex >= levelsInDistrict(district),
+    chapterComplete: pos === size - 1,
   };
 }
 

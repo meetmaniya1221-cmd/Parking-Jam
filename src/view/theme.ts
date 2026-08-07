@@ -107,10 +107,6 @@ export function paletteFor(settings: Settings): Palette {
   return out;
 }
 
-export function vehicleColor(hex: string, settings: Settings): string {
-  return remap(hex, settings.colorblind);
-}
-
 /* ------------------------------------------------------------------ *
  * Colour maths shared by the renderer
  * ------------------------------------------------------------------ */
@@ -125,17 +121,4 @@ export function shade(hex: string, amount: number): string {
 export function withAlpha(hex: string, alpha: number): string {
   const [r, g, b] = hexToRgb(hex);
   return `rgba(${r}, ${g}, ${b}, ${alpha})`;
-}
-
-/** Relative luminance, used to pick legible text over an arbitrary fill. */
-export function luminance(hex: string): number {
-  const [r, g, b] = hexToRgb(hex).map((c) => {
-    const s = c / 255;
-    return s <= 0.03928 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4;
-  }) as Rgb;
-  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
-}
-
-export function readableInk(background: string): string {
-  return luminance(background) > 0.45 ? BASE_PALETTE.ink : '#FFF6E3';
 }

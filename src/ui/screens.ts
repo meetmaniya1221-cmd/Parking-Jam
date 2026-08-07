@@ -9,7 +9,7 @@
 import { AudioEngine } from '../audio/audio';
 import {
   firstLevelOfDistrict,
-  GATES,
+  isUnlocked,
   levelsInDistrict,
   overtimeSet,
   rushHourJam,
@@ -69,7 +69,7 @@ export interface Screen {
 
 export interface ScreenHost {
   playLevel(index: number): void;
-  playSpecial(kind: 'rush' | 'overtime', index?: number): void;
+  playSpecial(kind: 'rush' | 'overtime' | 'night', index?: number): void;
   refreshChrome(): void;
 }
 
@@ -415,7 +415,7 @@ export function createDepotScreen({ store, audio, host }: Deps): Screen {
       nodes.push(section('Morning Commute', board));
 
       // Dispatch Board
-      if (s.progress.highest >= GATES.dispatchBoard) {
+      if (isUnlocked('dispatchBoard', s.progress.highest)) {
         const tasks = el('div', { class: 'tasks' });
         s.daily.dispatch.forEach((task, i) => {
           tasks.appendChild(
@@ -555,7 +555,7 @@ export function createGarageScreen({ store, audio, host }: Deps): Screen {
     const s = store.state;
     rebuild(list, () => {
       const nodes: HTMLElement[] = [];
-      if (s.progress.highest < GATES.garage) {
+      if (!isUnlocked('garage', s.progress.highest)) {
         nodes.push(
           el(
             'div',
@@ -572,7 +572,7 @@ export function createGarageScreen({ store, audio, host }: Deps): Screen {
 
       const tabs = el('div', { class: 'tabs' });
       (['rides', 'liveries', 'horns'] as const).forEach((id) => {
-        if (id === 'horns' && s.progress.highest < GATES.hornLibrary) return;
+        if (id === 'horns' && !isUnlocked('hornLibrary', s.progress.highest)) return;
         tabs.appendChild(
           button(id[0].toUpperCase() + id.slice(1), {
             variant: tab === id ? 'primary' : 'ghost',
@@ -775,7 +775,7 @@ export function createEventsScreen({ store, audio, host }: Deps): Screen {
     rebuild(list, () => {
       const nodes: HTMLElement[] = [];
 
-      if (s.progress.highest < GATES.rushHour) {
+      if (!isUnlocked('rushHour', s.progress.highest)) {
         nodes.push(
           el(
             'div',
@@ -826,6 +826,29 @@ export function createEventsScreen({ store, audio, host }: Deps): Screen {
         ),
       );
 
+      // Night Shift — Tuesdays, and previewable any day.
+      const isTuesday = new Date().getDay() === 2;
+      nodes.push(
+        section(
+          'Night Shift',
+          el(
+            'div',
+            { class: 'card card--night' },
+            el('p', { class: 'card__eyebrow', text: isTuesday ? 'Live now' : 'Tuesdays, 18:00' }),
+            el('h2', { class: 'card__title', text: 'Lit only by headlights' }),
+            el('p', {
+              class: 'card__body',
+              text: 'The same reads, newly tense — cones follow your facing, and the lot keeps its secrets. 1.5× Miles.',
+            }),
+            button(isTuesday ? 'Clock on' : 'Try a night lot', {
+              variant: isTuesday ? 'primary' : 'secondary',
+              icon: '🌙',
+              onTap: () => host.playSpecial('night'),
+            }),
+          ),
+        ),
+      );
+
       // Impound Lot
       const canPick = s.wallet.keys >= KEYS_PER_IMPOUND;
       nodes.push(
@@ -848,7 +871,7 @@ export function createEventsScreen({ store, audio, host }: Deps): Screen {
       );
 
       // City Pass
-      if (s.progress.highest >= GATES.cityPass) {
+      if (isUnlocked('cityPass', s.progress.highest)) {
         const tier = passTier(s.wallet.miles);
         const rows = el('div', { class: 'pass' });
         for (let t = Math.max(1, tier - 1); t <= Math.min(PASS_TIERS, tier + 3); t++) {
@@ -921,7 +944,7 @@ export function createEventsScreen({ store, audio, host }: Deps): Screen {
       }
 
       // Overtime Shifts
-      if (s.progress.highest >= GATES.overtime) {
+      if (isUnlocked('overtime', s.progress.highest)) {
         const shifts = el('div', { class: 'shifts' });
         overtimeSet(day, 5).forEach((entry, i) => {
           shifts.appendChild(

@@ -104,30 +104,7 @@ export function formatNumber(n: number): string {
   return Math.round(n).toLocaleString();
 }
 
-export function formatDuration(ms: number): string {
-  const total = Math.round(ms / 1000);
-  const m = Math.floor(total / 60);
-  const s = total % 60;
-  return m > 0 ? `${m}m ${String(s).padStart(2, '0')}s` : `${s}s`;
-}
-
 export function formatHours(hours: number): string {
   if (hours >= 1) return `${Math.floor(hours)}h ${Math.round((hours % 1) * 60)}m`;
   return `${Math.round(hours * 60)}m`;
-}
-
-/** Animate a counter so rewards land as motion, not a jump cut. */
-export function countUp(node: HTMLElement, from: number, to: number, ms = 600): void {
-  if (from === to) {
-    node.textContent = formatNumber(to);
-    return;
-  }
-  const start = performance.now();
-  const step = (now: number) => {
-    const t = Math.min(1, (now - start) / ms);
-    const eased = 1 - (1 - t) ** 3;
-    node.textContent = formatNumber(from + (to - from) * eased);
-    if (t < 1) requestAnimationFrame(step);
-  };
-  requestAnimationFrame(step);
 }

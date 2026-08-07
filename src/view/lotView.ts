@@ -17,6 +17,7 @@ import {
   capability,
   createLotState,
   probe,
+  rebuildOcc,
   resolveMove,
   resolvePivot,
   terrainAt,
@@ -72,6 +73,17 @@ export interface LotViewEvents {
   onStateChanged?: () => void;
 }
 
+interface HistoryEntry {
+  x: Int16Array;
+  y: Int16Array;
+  facing: Uint8Array;
+  gone: Uint8Array;
+  remaining: number;
+  vipsRemaining: number;
+  slides: number;
+  bumps: number;
+}
+
 interface Anim {
   gx: number;
   gy: number;
@@ -91,6 +103,8 @@ interface Anim {
   exiting: boolean;
   exitDir: Dir;
   exitTime: number;
+  leanX: number;
+  leanY: number;
 }
 
 const SLIDE_BASE_MS = 95;
@@ -102,8 +116,20 @@ const TAP_SLOP_PX = 10;
 /** Extra travel a drag may show past a blocker, as a fraction of a cell. */
 const RUBBER = 0.24;
 
-const easeOutCubic = (t: number) => 1 - (1 - t) ** 3;
+/** Furthest back a player can step. Mistakes are free, but memory is not. */
+const HISTORY_LIMIT = 64;
+
 const easeInQuad = (t: number) => t * t;
+
+/**
+ * Anticipation → action → settle (GDD §12). A short pull-back before the car
+ * commits, an eased run, and a two-bounce suspension settle on arrival.
+ */
+function easeSlide(t: number): number {
+  if (t < 0.15) return -0.055 * Math.sin((t / 0.15) * Math.PI);
+  const u = (t - 0.15) / 0.85;
+  return 1 - (1 - u) ** 3 + Math.sin(u * Math.PI * 2) * 0.03 * (1 - u);
+}
 
 export class LotView {
   state: LotState;
@@ -146,6 +172,9 @@ export class LotView {
   private resizeObserver: ResizeObserver | null = null;
   private destroyed = false;
   private tapTarget: ((vi: number) => void) | null = null;
+  private history: HistoryEntry[] = [];
+  private keyboardVi = 0;
+  private keyboardFocused = false;
 
   constructor(
     canvas: HTMLCanvasElement,
@@ -166,10 +195,14 @@ export class LotView {
     this.anims = this.buildAnims();
 
     canvas.style.touchAction = 'none';
+    canvas.tabIndex = 0;
     canvas.addEventListener('pointerdown', this.onPointerDown);
     canvas.addEventListener('pointermove', this.onPointerMove);
     canvas.addEventListener('pointerup', this.onPointerUp);
     canvas.addEventListener('pointercancel', this.onPointerCancel);
+    canvas.addEventListener('keydown', this.onKeyDown);
+    canvas.addEventListener('focus', this.onFocus);
+    canvas.addEventListener('blur', this.onBlur);
 
     if (typeof ResizeObserver !== 'undefined') {
       this.resizeObserver = new ResizeObserver(() => this.resize());
@@ -203,6 +236,8 @@ export class LotView {
       exiting: false,
       exitDir: 0 as Dir,
       exitTime: 0,
+      leanX: 0,
+      leanY: 0,
     }));
   }
 
@@ -211,6 +246,7 @@ export class LotView {
     this.state = createLotState(level);
     if (restore) this.applyRestore(restore.vehicles);
     this.anims = this.buildAnims();
+    this.history = [];
     this.particles.length = 0;
     this.hintIds = [];
     this.preview = null;
@@ -334,6 +370,9 @@ export class LotView {
     this.canvas.removeEventListener('pointermove', this.onPointerMove);
     this.canvas.removeEventListener('pointerup', this.onPointerUp);
     this.canvas.removeEventListener('pointercancel', this.onPointerCancel);
+    this.canvas.removeEventListener('keydown', this.onKeyDown);
+    this.canvas.removeEventListener('focus', this.onFocus);
+    this.canvas.removeEventListener('blur', this.onBlur);
     this.resizeObserver?.disconnect();
     this.audio.stopTire();
   }
@@ -487,6 +526,80 @@ export class LotView {
     if (vi >= 0) this.settle(vi);
   };
 
+  /**
+   * Keyboard play. The lot is a grid of discrete objects, so it maps cleanly to
+   * a cursor: step through the cars still on the lot, drive the selected one,
+   * reverse it, or step back a move. Without this the game needs a pointer,
+   * which is not a reasonable thing to require.
+   */
+  private onFocus = (): void => {
+    this.keyboardFocused = true;
+  };
+
+  private onBlur = (): void => {
+    this.keyboardFocused = false;
+  };
+
+  private onKeyDown = (e: KeyboardEvent): void => {
+    if (!this.interactive) return;
+    const live: number[] = [];
+    for (let i = 0; i < this.state.x.length; i++) if (!this.state.gone[i]) live.push(i);
+    if (live.length === 0) return;
+
+    const step = (delta: number) => {
+      const at = live.indexOf(this.keyboardVi);
+      this.keyboardVi = live[(at + delta + live.length) % live.length];
+      this.anims[this.keyboardVi].highlight = 1;
+      this.audio.pickUp();
+    };
+
+    switch (e.key) {
+      case 'ArrowRight':
+      case 'ArrowDown':
+      case 'Tab':
+        e.preventDefault();
+        step(e.shiftKey ? -1 : 1);
+        break;
+      case 'ArrowLeft':
+      case 'ArrowUp':
+        e.preventDefault();
+        step(-1);
+        break;
+      case 'Enter':
+      case ' ': {
+        e.preventDefault();
+        if (!live.includes(this.keyboardVi)) this.keyboardVi = live[0];
+        this.tapDrive(this.keyboardVi);
+        break;
+      }
+      case 'Backspace':
+      case 'z':
+      case 'Z':
+        e.preventDefault();
+        this.undo();
+        break;
+      case 'r':
+      case 'R': {
+        // Reverse the selected car one cell.
+        e.preventDefault();
+        if (!live.includes(this.keyboardVi)) this.keyboardVi = live[0];
+        const back = ((this.state.facing[this.keyboardVi] + 2) % 4) as Dir;
+        const move = resolveMove(this.state, this.keyboardVi, back, 1);
+        if (move) this.commit(move);
+        else this.bump(this.keyboardVi, back);
+        break;
+      }
+      default:
+        return;
+    }
+    this.events.onStateChanged?.();
+  };
+
+  /** The car the keyboard cursor is on, or −1. */
+  get selectedVehicle(): number {
+    return this.keyboardVi;
+  }
+
   private cancelDrag(): void {
     if (this.dragVi >= 0) this.anims[this.dragVi].highlight = 0;
     if (this.pointerId !== null) {
@@ -538,7 +651,66 @@ export class LotView {
    * Move application
    * ---------------------------------------------------------------- */
 
+  private pushHistory(): void {
+    this.history.push({
+      x: this.state.x.slice(),
+      y: this.state.y.slice(),
+      facing: this.state.facing.slice(),
+      gone: this.state.gone.slice(),
+      remaining: this.state.remaining,
+      vipsRemaining: this.state.vipsRemaining,
+      slides: this.state.slides,
+      bumps: this.state.bumps,
+    });
+    if (this.history.length > HISTORY_LIMIT) this.history.shift();
+  }
+
+  canUndo(): boolean {
+    return this.history.length > 0;
+  }
+
+  /**
+   * Step back one move. One-way arrows and oil slicks make some moves
+   * irreversible, so without this a player could park themselves into a lot
+   * that can no longer be cleared — which would break the promise that a
+   * mistake costs nothing.
+   */
+  undo(): boolean {
+    const entry = this.history.pop();
+    if (!entry) return false;
+    this.cancelDrag();
+    this.state.x.set(entry.x);
+    this.state.y.set(entry.y);
+    this.state.facing.set(entry.facing);
+    this.state.gone.set(entry.gone);
+    this.state.remaining = entry.remaining;
+    this.state.vipsRemaining = entry.vipsRemaining;
+    this.state.slides = entry.slides;
+    this.state.bumps = entry.bumps;
+    rebuildOcc(this.state);
+
+    for (let i = 0; i < this.anims.length; i++) {
+      const a = this.anims[i];
+      a.fromGx = a.gx;
+      a.fromGy = a.gy;
+      a.toGx = this.state.x[i];
+      a.toGy = this.state.y[i];
+      a.t = 0;
+      a.duration = this.duration(180);
+      a.exiting = false;
+      a.exitTime = 0;
+      a.alpha = this.state.gone[i] ? 0 : 1;
+      a.squash = 0;
+      a.wobbleTime = 0;
+    }
+    this.audio.snap();
+    vibrate(this.view.settings, 8);
+    this.events.onStateChanged?.();
+    return true;
+  }
+
   private commit(move: Move): void {
+    this.pushHistory();
     const vi = move.vi;
     const anim = this.anims[vi];
     const total = this.state.x.length;
@@ -804,10 +976,22 @@ export class LotView {
       const a = this.anims[i];
 
       if (a.t < 1) {
+        const prevX = a.gx;
+        const prevY = a.gy;
         a.t = Math.min(1, a.t + (dt * 1000) / a.duration);
-        const eased = a.exiting ? easeInQuad(a.t) : easeOutCubic(a.t);
+        const eased = a.exiting ? easeInQuad(a.t) : easeSlide(a.t);
         a.gx = a.fromGx + (a.toGx - a.fromGx) * eased;
         a.gy = a.fromGy + (a.toGy - a.fromGy) * eased;
+        // The body leans against its own acceleration — a leather-creak tilt.
+        const speed = dt > 0 ? Math.hypot(a.gx - prevX, a.gy - prevY) / dt : 0;
+        const towardX = a.toGx === a.fromGx ? 0 : Math.sign(a.toGx - a.fromGx);
+        const towardY = a.toGy === a.fromGy ? 0 : Math.sign(a.toGy - a.fromGy);
+        const tilt = Math.min(1, speed / 9) * (a.t < 0.35 ? 1 : -0.4);
+        a.leanX = -towardX * tilt;
+        a.leanY = -towardY * tilt;
+      } else {
+        a.leanX += (0 - a.leanX) * Math.min(1, dt * 12);
+        a.leanY += (0 - a.leanY) * Math.min(1, dt * 12);
       }
       if (a.exiting) {
         a.exitTime += dt * 1000;
@@ -823,7 +1007,8 @@ export class LotView {
         a.wobble = 0;
       }
       a.flash = Math.max(0, a.flash - dt * 3);
-      a.highlight += ((i === this.dragVi ? 1 : 0) - a.highlight) * Math.min(1, dt * 14);
+      const wantHighlight = i === this.dragVi || (this.dragVi < 0 && i === this.keyboardVi && this.keyboardFocused) ? 1 : 0;
+      a.highlight += (wantHighlight - a.highlight) * Math.min(1, dt * 14);
       const wantHint = this.hintIds.includes(i) ? 0.55 + Math.sin(performance.now() / 260) * 0.45 : 0;
       a.hint += (wantHint - a.hint) * Math.min(1, dt * 10);
     }
@@ -922,7 +1107,8 @@ export class LotView {
             : fleetColor(this.view.liveryId, def.hue ?? i),
         tags: this.state.tags[i],
         squash: a.squash,
-        lean: 0,
+        leanX: a.leanX,
+        leanY: a.leanY,
         wobble: a.wobble,
         alpha: a.alpha,
         highlight: a.highlight,
@@ -932,6 +1118,15 @@ export class LotView {
       });
     }
     return out;
+  }
+
+  /** True when no car can drive off the lot right now. */
+  nothingCanLeave(): boolean {
+    for (let vi = 0; vi < this.state.x.length; vi++) {
+      if (this.state.gone[vi]) continue;
+      if (probe(this.state, vi, this.state.facing[vi] as Dir).exitDist >= 0) return false;
+    }
+    return this.state.remaining > 0;
   }
 
   /** True when the nose of `vi` sits on a roundabout plate. */

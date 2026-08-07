@@ -262,6 +262,10 @@ body {
   background: linear-gradient(150deg, #4a3242, #253141);
 }
 
+.card--night {
+  background: linear-gradient(150deg, #1d2a44, #141b28);
+}
+
 .card--resume {
   border: 2px solid rgba(255, 209, 102, 0.35);
 }
@@ -836,6 +840,11 @@ body {
   touch-action: none;
 }
 
+.lot__canvas:focus-visible {
+  outline: 3px solid var(--sky-light);
+  outline-offset: -3px;
+}
+
 .coach {
   position: absolute;
   left: 50%;
@@ -899,6 +908,10 @@ body {
 
 .booster--empty {
   opacity: 0.55;
+}
+
+.booster--undo .booster__icon {
+  font-size: 1.35em;
 }
 
 .booster--pulse {

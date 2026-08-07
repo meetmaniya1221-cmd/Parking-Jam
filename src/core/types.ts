@@ -9,11 +9,6 @@
 /** Cardinal direction. 0=N (−y), 1=E (+x), 2=S (+y), 3=W (−x). */
 export type Dir = 0 | 1 | 2 | 3;
 
-export const DIR_N: Dir = 0;
-export const DIR_E: Dir = 1;
-export const DIR_S: Dir = 2;
-export const DIR_W: Dir = 3;
-
 /** dx per direction, indexed by Dir. */
 export const DX: readonly number[] = [0, 1, 0, -1];
 /** dy per direction, indexed by Dir. */
@@ -24,11 +19,6 @@ export const OPPOSITE: readonly Dir[] = [2, 3, 0, 1];
 export const CW: readonly Dir[] = [1, 2, 3, 0];
 /** Rotate a direction counter-clockwise (N→W→S→E). */
 export const CCW: readonly Dir[] = [3, 0, 1, 2];
-
-/** True when two directions share an axis (both horizontal or both vertical). */
-export function sameAxis(a: Dir, b: Dir): boolean {
-  return (a & 1) === (b & 1);
-}
 
 /** Terrain of a single lot cell. */
 export enum Terrain {

@@ -9,7 +9,7 @@
 import { AudioEngine } from './audio/audio';
 import { getLevel, overtimeSet, rushHourJam, rushHourName, TOTAL_LEVELS } from './core/campaign';
 import { LevelDef } from './core/types';
-import { PlayScreen } from './game/playScreen';
+import { PlayMode, PlayScreen } from './game/playScreen';
 import { grantOverflowCrate, pendingIncome, refreshDispatch } from './meta/economy';
 import { dayNumber, Settings } from './meta/save';
 import { GameStore } from './meta/store';
@@ -86,6 +86,7 @@ export class App {
 
     this.buildTabs();
     this.applySettings(store.state.settings);
+    store.subscribe(() => this.refreshChrome());
     this.refreshChrome();
   }
 
@@ -95,13 +96,13 @@ export class App {
 
   start(): void {
     const s = this.store.state;
-    this.handleComeback();
 
     // Cold boot goes straight to a touchable lot: no menu, no logo parade.
     if (!s.flags.tutorialDone && s.progress.highest <= 3) {
       this.playLevel(s.progress.nextLevel);
       return;
     }
+    this.handleComeback();
     const income = pendingIncome(s, Date.now());
     this.navigate(income.coins > 0 ? 'depot' : 'map');
   }
@@ -224,7 +225,7 @@ export class App {
     this.openPlay({ levelIndex: clamped, level: getLevel(clamped) });
   }
 
-  playSpecial(kind: 'rush' | 'overtime', index = 0): void {
+  playSpecial(kind: 'rush' | 'overtime' | 'night', index = 0): void {
     const day = dayNumber(Date.now());
     if (kind === 'rush') {
       this.openPlay({
@@ -240,15 +241,15 @@ export class App {
     this.openPlay({
       levelIndex: 0,
       level: entry.level,
-      mode: 'overtime',
-      title: `${entry.tag} shift`,
+      mode: kind,
+      title: kind === 'night' ? 'Night Shift' : `${entry.tag} shift`,
     });
   }
 
   private openPlay(options: {
     levelIndex: number;
     level: LevelDef;
-    mode?: 'campaign' | 'rush' | 'overtime';
+    mode?: PlayMode;
     title?: string;
   }): void {
     this.teardownCurrent();
@@ -292,6 +293,7 @@ export class App {
         this.store.update(() => set(input.checked));
         this.applySettings(this.store.state.settings);
         this.audio.uiTap();
+        this.play?.applySettings();
         this.screens.forEach((screen) => screen.refresh());
       });
       return el(
@@ -323,6 +325,7 @@ export class App {
       node.addEventListener('change', () => {
         this.store.update(() => set(node.value as T));
         this.applySettings(this.store.state.settings);
+        this.play?.applySettings();
         this.screens.forEach((screen) => screen.refresh());
       });
       return el(

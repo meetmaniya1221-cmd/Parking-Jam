@@ -236,11 +236,6 @@ export function findHorn(id: string): HornDef {
   return HORNS.find((h) => h.id === id) ?? HORNS[0];
 }
 
-export function setOf(liveryId: string): LiverySetDef | null {
-  const livery = findLivery(liveryId);
-  return LIVERY_SETS.find((s) => s.id === livery.setId) ?? null;
-}
-
 /** Fleet colour for a vehicle, given the equipped livery and the car's hue index. */
 export function fleetColor(liveryId: string, hue: number): string {
   const livery = findLivery(liveryId);

@@ -73,8 +73,9 @@ export interface VehicleView {
   tags: number;
   /** 0 = at rest, 1 = fully squashed by a bump. */
   squash: number;
-  /** −1 (nose down) … 1 (nose up) — the anticipation lean. */
-  lean: number;
+  /** Body tilt in cell units, applied to the lifted top face. */
+  leanX: number;
+  leanY: number;
   /** Radians of wobble applied after a bump. */
   wobble: number;
   alpha: number;
@@ -107,20 +108,6 @@ export interface Particle {
   kind: 'dust' | 'confetti' | 'spark' | 'ring';
 }
 
-export interface RenderModel {
-  level: LevelDef;
-  camera: Camera;
-  vehicles: VehicleView[];
-  preview: PathPreview | null;
-  particles: Particle[];
-  palette: Palette;
-  /** 0–1 dimming applied during the last-car slow-motion beat. */
-  focus: number;
-  /** Headlight-cone mode for Night Shift. */
-  night: boolean;
-  reducedMotion: boolean;
-}
-
 /* ------------------------------------------------------------------ *
  * Geometry helpers
  * ------------------------------------------------------------------ */
@@ -141,10 +128,6 @@ export function fitCamera(
     cw,
     ch,
   };
-}
-
-export function cellToScreen(cam: Camera, gx: number, gy: number): { x: number; y: number } {
-  return { x: cam.ox + gx * cam.cw, y: cam.oy + gy * cam.ch };
 }
 
 /** Which cell a screen point falls in; may be outside the lot. */
@@ -605,8 +588,10 @@ export function drawVehicle(
   ctx.fill();
 
   // Top face, inset and lifted.
-  const tx = x0 + bevelX;
-  const ty = y0 + bevelY - hpx;
+  const leanPx = Math.max(-0.09, Math.min(0.09, v.leanX)) * cw;
+  const leanPy = Math.max(-0.09, Math.min(0.09, v.leanY)) * ch;
+  const tx = x0 + bevelX + leanPx;
+  const ty = y0 + bevelY - hpx + leanPy;
   const tw = bw - bevelX * 2;
   const th = bh - bevelY * 2;
 
@@ -846,7 +831,17 @@ export function drawParticles(
   ctx.globalAlpha = 1;
 }
 
-/** Night Shift: the lot is lit only by headlight cones that follow facing. */
+/**
+ * Night Shift: the lot is lit only by headlight pools that follow each car's
+ * facing (GDD §9).
+ *
+ * The darkness is built on a scratch layer and the light is *punched out* of
+ * it, which gives soft-edged pools instead of the hard wedges a straight
+ * additive pass produces. A little ambient light survives on purpose — the
+ * grid has to stay readable even in the dark.
+ */
+let nightScratch: HTMLCanvasElement | null = null;
+
 export function drawNightMask(
   ctx: CanvasRenderingContext2D,
   vehicles: readonly VehicleView[],
@@ -854,28 +849,61 @@ export function drawNightMask(
   width: number,
   height: number,
 ): void {
+  if (width <= 0 || height <= 0) return;
+  if (!nightScratch) nightScratch = document.createElement('canvas');
+  const scratch = nightScratch;
+  if (scratch.width !== Math.ceil(width) || scratch.height !== Math.ceil(height)) {
+    scratch.width = Math.ceil(width);
+    scratch.height = Math.ceil(height);
+  }
+  const sctx = scratch.getContext('2d');
+  if (!sctx) return;
+
+  sctx.setTransform(1, 0, 0, 1, 0, 0);
+  sctx.clearRect(0, 0, width, height);
+  sctx.fillStyle = 'rgba(9, 13, 24, 0.86)';
+  sctx.fillRect(0, 0, width, height);
+
+  sctx.globalCompositeOperation = 'destination-out';
+  const reach = cam.cw * 2.3;
+  for (const v of vehicles) {
+    if (v.alpha <= 0.05) continue;
+    const nx = cam.ox + (v.gx + 0.5 + DX[v.facing] * 0.45) * cam.cw;
+    const ny = cam.oy + (v.gy + 0.5 + DY[v.facing] * 0.45) * cam.ch;
+    const angle = Math.atan2(DY[v.facing], DX[v.facing]);
+
+    sctx.save();
+    sctx.translate(nx, ny);
+    sctx.rotate(angle);
+    // Elongated forward, narrow across: a headlight pool, not a spotlight.
+    sctx.scale(1.5, 0.62);
+    const pool = sctx.createRadialGradient(reach * 0.35, 0, 0, reach * 0.35, 0, reach);
+    pool.addColorStop(0, 'rgba(0, 0, 0, 1)');
+    pool.addColorStop(0.55, 'rgba(0, 0, 0, 0.55)');
+    pool.addColorStop(1, 'rgba(0, 0, 0, 0)');
+    sctx.fillStyle = pool;
+    sctx.beginPath();
+    sctx.arc(reach * 0.35, 0, reach, 0, Math.PI * 2);
+    sctx.fill();
+    sctx.restore();
+  }
+  sctx.globalCompositeOperation = 'source-over';
+
+  ctx.drawImage(scratch, 0, 0, width, height);
+
+  // A warm wash over the lit pools, so headlights read as tungsten.
   ctx.save();
-  ctx.globalCompositeOperation = 'multiply';
-  ctx.fillStyle = 'rgba(18, 24, 40, 0.82)';
-  ctx.fillRect(0, 0, width, height);
   ctx.globalCompositeOperation = 'lighter';
   for (const v of vehicles) {
-    if (v.alpha <= 0) continue;
-    const bounds = vehicleBounds(v);
-    const cx = cam.ox + ((bounds.x0 + bounds.x1) / 2) * cam.cw;
-    const cy = cam.oy + ((bounds.y0 + bounds.y1) / 2) * cam.ch;
+    if (v.alpha <= 0.05) continue;
     const nx = cam.ox + (v.gx + 0.5 + DX[v.facing] * 0.5) * cam.cw;
     const ny = cam.oy + (v.gy + 0.5 + DY[v.facing] * 0.5) * cam.ch;
-    const angle = Math.atan2(ny - cy, nx - cx);
-    const reach = cam.cw * 3.2;
-    const cone = ctx.createRadialGradient(nx, ny, 0, nx, ny, reach);
-    cone.addColorStop(0, 'rgba(255, 240, 200, 0.5)');
-    cone.addColorStop(1, 'rgba(255, 240, 200, 0)');
-    ctx.fillStyle = cone;
+    const glow = ctx.createRadialGradient(nx, ny, 0, nx, ny, cam.cw * 0.9);
+    glow.addColorStop(0, 'rgba(255, 226, 170, 0.22)');
+    glow.addColorStop(1, 'rgba(255, 226, 170, 0)');
+    ctx.fillStyle = glow;
     ctx.beginPath();
-    ctx.moveTo(nx, ny);
-    ctx.arc(nx, ny, reach, angle - 0.5, angle + 0.5);
-    ctx.closePath();
+    ctx.arc(nx, ny, cam.cw * 0.9, 0, Math.PI * 2);
     ctx.fill();
   }
   ctx.restore();

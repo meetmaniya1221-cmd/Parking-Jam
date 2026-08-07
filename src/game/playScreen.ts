@@ -17,9 +17,9 @@ import {
   prefetchLevel,
   TOTAL_LEVELS,
 } from '../core/campaign';
-import { hintFrom } from '../core/solver';
+import { hintFrom, isStillSolvable, nextMoveHint } from '../core/solver';
 import { Band, BlockReason, LevelDef, Terrain, VehicleTag } from '../core/types';
-import { advanceDispatch, atCoinPinch, registerClear, TrunkReward } from '../meta/economy';
+import { atCoinPinch, registerClear, TrunkReward } from '../meta/economy';
 import { DISTRICTS } from '../meta/districts';
 import { BoosterId } from '../meta/save';
 import { GameStore } from '../meta/store';
@@ -41,7 +41,7 @@ export interface PlayHost {
   refreshChrome(): void;
 }
 
-export type PlayMode = 'campaign' | 'rush' | 'overtime';
+export type PlayMode = 'campaign' | 'rush' | 'overtime' | 'night';
 
 export interface PlayOptions {
   levelIndex: number;
@@ -50,6 +50,9 @@ export interface PlayOptions {
   mode?: PlayMode;
   title?: string;
 }
+
+/** Night Shift pays 1.5× Miles for the same reads, newly tense (GDD §9). */
+const NIGHT_MILE_BONUS = 1.5;
 
 const AMBULANCE_WINDOW_MS = 30_000;
 /** Dispatcher pulses after this many bumps inside the window (GDD §17 test #6). */
@@ -63,6 +66,9 @@ interface BoosterButton {
   node: HTMLButtonElement;
   count: HTMLElement;
 }
+
+/** Cars in the lot above which the dead-end check is deferred to idle time. */
+const DEAD_END_INLINE_LIMIT = 12;
 
 export class PlayScreen {
   readonly root: HTMLElement;
@@ -94,6 +100,9 @@ export class PlayScreen {
   private ambulanceNode!: HTMLElement;
   private coachNode!: HTMLElement;
   private boosterButtons: BoosterButton[] = [];
+  private undoButton!: HTMLButtonElement;
+  private deadEndWarned = false;
+  private deadEndTimer = 0;
 
   private readonly mode: PlayMode;
   private readonly title: string;
@@ -107,7 +116,13 @@ export class PlayScreen {
     this.level = options.level ?? getLevel(this.levelIndex);
     this.title = options.title ?? `Jam ${this.levelIndex}`;
 
-    this.canvas = el('canvas', { class: 'lot__canvas', aria: { label: 'Parking lot' } });
+    this.canvas = el('canvas', {
+      class: 'lot__canvas',
+      aria: {
+        label:
+          'Parking lot. Arrow keys select a car, Enter drives it, R reverses it, Z undoes a move.',
+      },
+    });
     this.root = el('div', { class: 'play' }, this.buildHeader(), el('div', { class: 'lot' }, this.canvas, this.buildCoach()), this.buildFooter());
   }
 
@@ -162,6 +177,16 @@ export class PlayScreen {
 
   private buildFooter(): HTMLElement {
     const boosterRow = el('div', { class: 'boosters' });
+    this.undoButton = button('', {
+      variant: 'secondary',
+      class: 'booster booster--undo',
+      title: 'Undo the last slide',
+      onTap: () => this.undo(),
+    });
+    this.undoButton.prepend(el('span', { class: 'booster__icon', text: '↶' }));
+    this.undoButton.appendChild(el('span', { class: 'booster__label', text: 'Undo' }));
+    boosterRow.appendChild(this.undoButton);
+
     const defs: Array<{ id: BoosterId; icon: string; label: string }> = [
       { id: 'towHook', icon: '🪝', label: 'Tow Hook' },
       { id: 'dispatcher', icon: '📻', label: 'Dispatcher' },
@@ -199,7 +224,10 @@ export class PlayScreen {
     this.view = new LotView(this.canvas, this.level, this.audio, this.viewContext(), {
       onExit: (vi, remaining) => this.onExit(vi, remaining),
       onBump: (vi, blockerVi, reason) => this.onBump(vi, blockerVi, reason),
-      onSlide: () => this.dismissCoach(true),
+      onSlide: () => {
+        this.dismissCoach(true);
+        this.scheduleDeadEndCheck();
+      },
       onCleared: () => void this.onCleared(),
       onLastCar: () => this.onLastCar(),
       onStateChanged: () => this.syncHud(),
@@ -230,6 +258,7 @@ export class PlayScreen {
     window.clearInterval(this.tickTimer);
     window.clearTimeout(this.hintTimer);
     window.clearTimeout(this.coachTimer);
+    window.clearTimeout(this.deadEndTimer);
     this.audio.stopBed();
     setDebugLot(null, null);
     if (this.mode === 'campaign' && this.view && !this.finished && this.view.state.remaining > 0) {
@@ -237,6 +266,12 @@ export class PlayScreen {
     }
     this.view?.destroy();
     this.view = null;
+  }
+
+  /** Re-read the palette and accessibility settings into the running lot. */
+  applySettings(): void {
+    this.view?.setContext(this.viewContext());
+    this.syncHud();
   }
 
   private viewContext(): LotViewContext {
@@ -247,7 +282,7 @@ export class PlayScreen {
       liveryId: s.garage.equipped.livery,
       rideId: s.garage.equipped.ride,
       hornId: s.garage.equipped.horn,
-      night: false,
+      night: this.mode === 'night',
     };
   }
 
@@ -285,6 +320,7 @@ export class PlayScreen {
     this.trunksBanked = [];
     this.ambulancesRescued = 0;
     this.finished = false;
+    this.deadEndWarned = false;
     this.store.update((s) => {
       if (this.mode === 'campaign' && s.resume?.levelIndex === this.levelIndex) s.resume = null;
     });
@@ -317,10 +353,15 @@ export class PlayScreen {
         ? DISTRICTS[chapterPosition(this.levelIndex).district].name
         : this.mode === 'rush'
           ? 'Rush Hour'
-          : 'Overtime';
+          : this.mode === 'night'
+            ? 'Night Shift'
+            : 'Overtime';
     this.patternNode.textContent = `${place} · ${pattern ? pattern.label : bandLabel(band)}`;
 
     this.audio.setBedIntensity(total === 0 ? 0 : 1 - remaining / total);
+
+    this.undoButton.disabled = !this.view.canUndo();
+    this.undoButton.classList.toggle('booster--empty', !this.view.canUndo());
 
     const boosters = this.store.state.boosters;
     for (const entry of this.boosterButtons) {
@@ -407,6 +448,37 @@ export class PlayScreen {
     this.root.classList.add('play--finale');
   }
 
+  private undo(): void {
+    if (!this.view?.undo()) return;
+    this.deadEndWarned = false;
+    this.dismissCoach(false);
+    this.syncHud();
+  }
+
+  /**
+   * One-way arrows and oil slicks make some slides irreversible, so a player
+   * really can park a lot into a state that cannot be cleared. The game never
+   * fails them for it: when nothing can leave, it checks quietly, and if the
+   * knot is genuinely dead it offers the step back.
+   */
+  private scheduleDeadEndCheck(): void {
+    if (!this.view || this.finished || this.deadEndWarned) return;
+    if (!this.view.nothingCanLeave()) return;
+    window.clearTimeout(this.deadEndTimer);
+    const run = () => {
+      if (!this.view || this.finished || this.deadEndWarned) return;
+      if (!this.view.nothingCanLeave()) return;
+      if (isStillSolvable(this.view.state)) return;
+      this.deadEndWarned = true;
+      toast('Knotted for good — step back a move.', '↶');
+      this.undoButton.classList.add('booster--pulse');
+      window.setTimeout(() => this.undoButton.classList.remove('booster--pulse'), 6000);
+    };
+    // A full solve on a packed lot is not frame work; defer it off the drag.
+    const delay = this.view.state.remaining > DEAD_END_INLINE_LIMIT ? 260 : 60;
+    this.deadEndTimer = window.setTimeout(run, delay);
+  }
+
   /* ---------------------------------------------------------------- *
    * Boosters
    * ---------------------------------------------------------------- */
@@ -429,10 +501,16 @@ export class PlayScreen {
         });
         return;
       case 'dispatcher': {
-        const ids = hintFrom(this.view.state, 3);
+        let ids = hintFrom(this.view.state, 3);
         if (ids.length === 0) {
-          toast('No line from here — try a reposition.', '📻');
-          return;
+          // No car can leave yet: point at the one that has to move first.
+          const first = nextMoveHint(this.view.state);
+          if (!first) {
+            toast('This lot is knotted for good — step back.', '↶');
+            return;
+          }
+          ids = [first.vi];
+          toast('That one needs to shift first.', '📻');
         }
         this.view.setHints(ids);
         window.clearTimeout(this.hintTimer);
@@ -609,10 +687,11 @@ export class PlayScreen {
     const state = this.view.state;
     const coins = this.mode === 'rush' ? 150 : 90;
     const medallions = this.mode === 'rush' ? 5 : 0;
+    const miles = Math.round(state.x.length * (this.mode === 'night' ? NIGHT_MILE_BONUS : 1));
     this.store.update((s) => {
       s.wallet.coins += coins;
       s.wallet.medallions += medallions;
-      s.wallet.miles += state.x.length;
+      s.wallet.miles += miles;
       s.stats.totalExits += state.x.length;
       s.stats.jamsCleared++;
       if (this.mode === 'rush') s.rush.clears++;
@@ -623,17 +702,23 @@ export class PlayScreen {
     const handle = showWinScreen({
       levelIndex: this.levelIndex,
       levelLabel: this.title,
-      bandLabel: this.mode === 'rush' ? 'Rush Hour' : 'Overtime',
+      bandLabel:
+        this.mode === 'rush' ? 'Rush Hour' : this.mode === 'night' ? 'Night Shift' : 'Overtime',
       slides: state.slides,
       parSlides: this.level.parSlides,
       bumps: state.bumps,
       durationMs: duration,
       coins,
-      miles: state.x.length,
+      miles,
       cleanExit: state.bumps === 0,
       goldPlate: state.slides <= this.level.parSlides,
       keysEarned: 0,
-      districtName: this.mode === 'rush' ? 'Today’s jam' : 'Overtime shift',
+      districtName:
+        this.mode === 'rush'
+          ? 'Today’s jam'
+          : this.mode === 'night'
+            ? 'After hours'
+            : 'Overtime shift',
       districtProgress: 1,
       chapterPos: 1,
       chapterSize: 1,
@@ -760,9 +845,4 @@ function boosterName(id: BoosterId): string {
 function todayStamp(): string {
   const d = new Date();
   return `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`;
-}
-
-/** Kept for the Dispatch Board's "fund a project" task wiring. */
-export function noteProjectFunded(store: GameStore, count = 1): void {
-  store.update((s) => advanceDispatch(s, 'fund', count));
 }

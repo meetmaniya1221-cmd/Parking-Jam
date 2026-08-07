@@ -11,7 +11,6 @@ import {
   Dir,
   DX,
   DY,
-  ExitDef,
   LevelDef,
   LotState,
   Move,
@@ -123,13 +122,6 @@ export function exitIndexAt(level: LevelDef, x: number, y: number, dir: Dir): nu
     if (e.x === x && e.y === y && e.dir === dir) return i;
   }
   return -1;
-}
-
-/** The i-th body cell of a vehicle, 0 = nose. Writes into `out` to avoid allocation. */
-export function bodyCell(s: LotState, vi: number, k: number, out: { x: number; y: number }): void {
-  const f = s.facing[vi] as Dir;
-  out.x = s.x[vi] - DX[f] * k;
-  out.y = s.y[vi] - DY[f] * k;
 }
 
 /** Nose cell when travelling `dir`; the tail leads when reversing. */
@@ -554,8 +546,4 @@ export function validateLevel(level: LevelDef): ValidationIssue[] {
     }
   }
   return issues;
-}
-
-export function makeExit(x: number, y: number, dir: Dir): ExitDef {
-  return { x, y, dir };
 }
