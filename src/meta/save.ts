@@ -101,6 +101,8 @@ export interface PlayerState {
   city: {
     districts: DistrictState[];
     landmarks: string[];
+    /** Beautification pieces placed per district — the infinite cosmetic sink. */
+    beautification: Record<number, number>;
   };
 
   garage: {
@@ -232,6 +234,7 @@ export function createPlayerState(now: number = Date.now()): PlayerState {
         timelapseSeen: false,
       })),
       landmarks: [],
+      beautification: {},
     },
     garage: {
       // Endowed Progress again: the starter Ride and one livery are already owned.
@@ -311,6 +314,7 @@ export function migrate(raw: unknown, now: number = Date.now()): PlayerState {
         ...saved.city?.districts?.[i],
       })),
       landmarks: saved.city?.landmarks ?? [],
+      beautification: saved.city?.beautification ?? {},
     },
     garage: {
       ...base.garage,

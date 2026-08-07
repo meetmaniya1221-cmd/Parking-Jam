@@ -9,6 +9,11 @@ import { Rng } from '../src/core/rng';
 import {
   advanceGreenLight,
   atCoinPinch,
+  beautificationCount,
+  beautify,
+  BEAUTIFICATION_COST,
+  canBeautify,
+  totalBeautification,
   BOOSTER_PRICES,
   buildLandmark,
   buyBooster,
@@ -461,5 +466,32 @@ describe('metered lots', () => {
     // The mode should appear regularly without taking over the sequence.
     expect(metered).toBeGreaterThan(10);
     expect(metered / (TOTAL_LEVELS - 44)).toBeLessThan(0.2);
+  });
+});
+
+describe('beautification', () => {
+  it('is only available on a restored district', () => {
+    state.wallet.coins = 10_000;
+    expect(canBeautify(state, 0)).toBe(false);
+    completeDistrict(state, 0);
+    expect(canBeautify(state, 0)).toBe(true);
+  });
+
+  it('absorbs surplus endlessly and shows up in the city', () => {
+    completeDistrict(state, 0);
+    state.wallet.coins = BEAUTIFICATION_COST * 5;
+    for (let i = 0; i < 5; i++) expect(beautify(state, 0)).toBe(true);
+    expect(beautify(state, 0)).toBe(false); // out of Coins, not out of pieces
+    expect(state.wallet.coins).toBe(0);
+    expect(beautificationCount(state, 0)).toBe(5);
+    expect(totalBeautification(state)).toBe(5);
+  });
+
+  it('never touches anything but Coins', () => {
+    completeDistrict(state, 0);
+    state.wallet.coins = BEAUTIFICATION_COST;
+    state.wallet.medallions = 7;
+    beautify(state, 0);
+    expect(state.wallet.medallions).toBe(7);
   });
 });

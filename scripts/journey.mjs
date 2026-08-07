@@ -125,6 +125,30 @@ async function buildLandmark(page) {
   else step('landmark built');
 }
 
+/** A restored district must absorb surplus Coins, endlessly. */
+async function beautify(page) {
+  await page.evaluate(() => window.__gridlock.seed({ coins: 40000 }));
+  await page.locator('.tab--map').click();
+  await page.waitForTimeout(400);
+  const button = page.locator('.district .btn', { hasText: 'Beautify' }).first();
+  if (!(await button.isVisible().catch(() => false))) {
+    problems.push('beautification: a restored district offered nothing to place');
+    return;
+  }
+  const before = await wallet(page);
+  await button.click();
+  await page.waitForTimeout(500);
+  const after = await wallet(page);
+  if (after.coins !== before.coins - 500) {
+    problems.push(`beautification: coins went ${before.coins} → ${after.coins}`);
+    return;
+  }
+  const note = await page.locator('.district--complete .district__note').first().innerText();
+  if (!/pieces placed/.test(note)) problems.push(`beautification: district reads "${note}"`);
+  else step('beautification absorbed surplus and shows on the district');
+  await page.screenshot({ path: `${SHOTS}/j9-beautify.png` });
+}
+
 /** Buy and equip a livery, and check the fleet actually repaints. */
 async function equipLivery(page) {
   await page.evaluate(() => window.__gridlock.seed({ medallions: 5000 }));
@@ -212,6 +236,7 @@ async function main() {
         await restoreDistricts(page, 2);
         await collectIncome(page);
         await buildLandmark(page);
+        await beautify(page);
         await equipLivery(page);
         await visualMatrix(page);
       } else {

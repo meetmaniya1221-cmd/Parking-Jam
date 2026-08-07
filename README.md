@@ -72,7 +72,7 @@ Everything is synthesised at runtime. Three buses with independent toggles, per-
 
 ### `src/meta` — the city
 
-Districts, seven projects each with costs that escalate by district index, City Income capped at four hours, Mystery Trunks with published odds, streaks that pause rather than reset, the Garage, the Dispatch Board, the City Pass, and Service Medals as the slow always-advancing meter behind the daily loop. Saves are versioned and defensively migrated: an older save is folded onto a fresh one so nothing is ever missing, and a hand-edited one is repaired without taking value away.
+Districts, seven projects each with costs that escalate by district index, City Income capped at four hours, Mystery Trunks with published odds, streaks that pause rather than reset, the Garage, the Dispatch Board, the City Pass, Service Medals as the slow always-advancing meter behind the daily loop, and Beautification as the endless cosmetic sink a late-game surplus needs — without it every later reward starts to feel like lint. Saves are versioned and defensively migrated: an older save is folded onto a fresh one so nothing is ever missing, and a hand-edited one is repaired without taking value away.
 
 ### Modes
 
@@ -103,7 +103,7 @@ Vehicle identity is never colour-only: class silhouettes differ, facing reads fr
 
 ## Testing
 
-`npm test` runs 116 unit tests: sim geometry and every modifier, solver optimality and dead-end detection, the full 320-level campaign audited for validity, solvability, par, band mix, gate compliance and difficulty scaling, plus the economy, medals, Metered-Lot gating and save layers.
+`npm test` runs 119 unit tests: sim geometry and every modifier, solver optimality and dead-end detection, the full 320-level campaign audited for validity, solvability, par, band mix, gate compliance and difficulty scaling, plus the economy, medals, Metered-Lot gating and save layers.
 
 `npm run smoke` is the one that catches what unit tests cannot. It boots the real game in Chromium at phone resolution, clears levels by dispatching genuine pointer events, drags a blocked car to check it bumps rather than escapes, undoes a slide, opens a hint, plays a Night Shift lot, runs a Metered Lot dry to check the save-me appears and that declining lands on a breather, plays a level with the keyboard alone, walks every meta screen, and fails on any console error, page exception, failed request, stacked modal or empty screen.
 

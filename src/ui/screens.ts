@@ -17,8 +17,13 @@ import {
 } from '../core/campaign';
 import { analyseDifficulty } from '../core/solver';
 import {
+  beautificationCount,
+  beautify,
+  BEAUTIFICATION,
+  BEAUTIFICATION_COST,
   BOOSTER_PRICES,
   buildLandmark,
+  canBeautify,
   buyBooster,
   canBuildLandmark,
   canClaimCommute,
@@ -27,6 +32,7 @@ import {
   claimDispatchBonus,
   claimPassTier,
   collectIncome,
+  exchangeMedallions,
   fundAllAffordable,
   fundProject,
   incomeRatePerHour,
@@ -219,7 +225,11 @@ export function createMapScreen({ store, audio, host }: Deps): Screen {
       el('p', {
         class: 'district__note',
         text: complete
-          ? `Restored · ${def.station} on air`
+          ? `Restored · ${def.station} on air${
+              beautificationCount(s, index) > 0
+                ? ` · ${beautificationCount(s, index)} pieces placed`
+                : ''
+            }`
           : `${ds.projectsFunded}/${PROJECTS_PER_DISTRICT} projects · next: ${project?.name ?? ''}`,
       }),
       el(
@@ -255,12 +265,39 @@ export function createMapScreen({ store, audio, host }: Deps): Screen {
               },
             })
           : null,
+        complete
+          ? button(`Beautify · ${BEAUTIFICATION_COST}`, {
+              variant: canBeautify(s, index) ? 'secondary' : 'ghost',
+              icon: nextPiece(s, index).icon,
+              disabled: !canBeautify(s, index),
+              title: `Place a ${nextPiece(s, index).name.toLowerCase()}`,
+              onTap: () => {
+                const piece = nextPiece(store.state, index);
+                if (!store.update((state) => beautify(state, index))) return;
+                audio.coins(60);
+                toast(`${piece.name} placed in ${def.name}.`, piece.icon);
+                host.refreshChrome();
+                refresh();
+              },
+            })
+          : null,
         button('Play', {
           variant: 'secondary',
-          onTap: () => host.playLevel(Math.max(unlockedAt, Math.min(s.progress.nextLevel, unlockedAt + levelsInDistrict(index) - 1))),
+          onTap: () =>
+            host.playLevel(
+              Math.max(
+                unlockedAt,
+                Math.min(s.progress.nextLevel, unlockedAt + levelsInDistrict(index) - 1),
+              ),
+            ),
         }),
       ),
     );
+  }
+
+  /** Cycle through the pieces so a district accumulates variety, not clones. */
+  function nextPiece(s: GameStore['state'], index: number) {
+    return BEAUTIFICATION[beautificationCount(s, index) % BEAUTIFICATION.length];
   }
 
   function fundProjectFlow(index: number): boolean {
@@ -555,6 +592,29 @@ export function createDepotScreen({ store, audio, host }: Deps): Screen {
           ),
         );
       });
+      shop.appendChild(
+        el(
+          'div',
+          { class: 'shop__item' },
+          el('div', { class: 'shop__icon', text: '💱' }),
+          el(
+            'div',
+            { class: 'shop__text' },
+            el('div', { class: 'shop__name', text: 'Trade 10 Medallions' }),
+            el('div', { class: 'shop__note', text: 'For 150 Coins. One way only.' }),
+          ),
+          button('Trade', {
+            variant: s.wallet.medallions >= 10 ? 'secondary' : 'ghost',
+            disabled: s.wallet.medallions < 10,
+            onTap: () => {
+              store.update((state) => exchangeMedallions(state, 10));
+              audio.coins(150);
+              host.refreshChrome();
+              refresh();
+            },
+          }),
+        ),
+      );
       nodes.push(section('Depot shop', shop));
       return nodes;
     });

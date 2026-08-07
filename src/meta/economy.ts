@@ -419,6 +419,50 @@ export function exchangeMedallions(state: PlayerState, medallions: number): bool
 }
 
 /* ------------------------------------------------------------------ *
+ * Beautification — the infinite cosmetic sink (GDD §5, §10)
+ * ------------------------------------------------------------------ */
+
+export const BEAUTIFICATION_COST = 500;
+
+export interface BeautificationPiece {
+  id: string;
+  name: string;
+  icon: string;
+}
+
+/**
+ * Repeatable, purely cosmetic, and deliberately endless. At Expert the economy
+ * flips to surplus and something has to absorb it, or every later reward starts
+ * to feel like lint. The city visibly accumulates the overflow.
+ */
+export const BEAUTIFICATION: readonly BeautificationPiece[] = [
+  { id: 'tree', name: 'Street tree', icon: '🌳' },
+  { id: 'bench', name: 'Bench', icon: '🪑' },
+  { id: 'planter', name: 'Planter', icon: '🪴' },
+  { id: 'lamp', name: 'Streetlamp', icon: '🏮' },
+];
+
+export function beautificationCount(state: PlayerState, district: number): number {
+  return state.city.beautification[district] ?? 0;
+}
+
+export function totalBeautification(state: PlayerState): number {
+  return Object.values(state.city.beautification).reduce((a, b) => a + b, 0);
+}
+
+/** Only a restored district can be beautified, and only with Coins to spare. */
+export function canBeautify(state: PlayerState, district: number): boolean {
+  return isDistrictComplete(state, district) && state.wallet.coins >= BEAUTIFICATION_COST;
+}
+
+export function beautify(state: PlayerState, district: number): boolean {
+  if (!canBeautify(state, district)) return false;
+  state.wallet.coins -= BEAUTIFICATION_COST;
+  state.city.beautification[district] = beautificationCount(state, district) + 1;
+  return true;
+}
+
+/* ------------------------------------------------------------------ *
  * Daily systems
  * ------------------------------------------------------------------ */
 
