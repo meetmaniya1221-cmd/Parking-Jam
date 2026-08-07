@@ -147,6 +147,16 @@ export interface PlayerState {
   /** Service Medal tiers already collected, keyed by medal id. */
   medals: Record<string, string[]>;
 
+  gauntlet: {
+    /** Year-month key; a new period resets the run. */
+    period: string;
+    /** Rungs cleared so far, 0–12. */
+    index: number;
+    /** Checkpoint chests already paid. */
+    chestsClaimed: number[];
+    finished: boolean;
+  };
+
   pass: {
     season: number;
     claimedTiers: number[];
@@ -263,6 +273,7 @@ export function createPlayerState(now: number = Date.now()): PlayerState {
     },
     rush: { lastAttemptDay: '', clears: 0, attempts: 0 },
     medals: {},
+    gauntlet: { period: '', index: 0, chestsClaimed: [], finished: false },
     pass: { season: 1, claimedTiers: [], premium: false },
     stats: {
       jamsCleared: 0,
@@ -326,6 +337,11 @@ export function migrate(raw: unknown, now: number = Date.now()): PlayerState {
     daily: { ...base.daily, ...saved.daily, dispatch: saved.daily?.dispatch ?? [] },
     rush: { ...base.rush, ...saved.rush },
     medals: saved.medals ?? {},
+    gauntlet: {
+      ...base.gauntlet,
+      ...saved.gauntlet,
+      chestsClaimed: saved.gauntlet?.chestsClaimed ?? [],
+    },
     pass: { ...base.pass, ...saved.pass, claimedTiers: saved.pass?.claimedTiers ?? [] },
     stats: { ...base.stats, ...saved.stats },
     ads: { ...base.ads, ...saved.ads },

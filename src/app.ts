@@ -7,10 +7,20 @@
  */
 
 import { AudioEngine } from './audio/audio';
-import { getLevel, overtimeSet, rushHourJam, rushHourName, TOTAL_LEVELS } from './core/campaign';
+import {
+  GAUNTLET_LENGTH,
+  gauntletJam,
+  gauntletPeriod,
+  gauntletRungLabel,
+  getLevel,
+  overtimeSet,
+  rushHourJam,
+  rushHourName,
+  TOTAL_LEVELS,
+} from './core/campaign';
 import { LevelDef } from './core/types';
 import { PlayMode, PlayScreen } from './game/playScreen';
-import { grantOverflowCrate, pendingIncome, refreshDispatch } from './meta/economy';
+import { grantOverflowCrate, pendingIncome, refreshDispatch, syncGauntlet } from './meta/economy';
 import { dayNumber, Settings } from './meta/save';
 import { GameStore } from './meta/store';
 import { button, el, formatNumber, pill } from './ui/dom';
@@ -25,6 +35,7 @@ import {
 } from './ui/screens';
 
 type TabId = 'map' | 'depot' | 'play' | 'events' | 'garage';
+type SpecialKind = 'rush' | 'overtime' | 'night' | 'coldCase' | 'gauntlet';
 
 function formatPlayTime(ms: number): string {
   const minutes = Math.round(ms / 60_000);
@@ -241,8 +252,12 @@ export class App {
     this.openPlay({ levelIndex: clamped, level: getLevel(clamped) });
   }
 
-  playSpecial(kind: 'rush' | 'overtime' | 'night' | 'coldCase', index = 0): void {
+  playSpecial(kind: SpecialKind, index = 0): void {
     const day = dayNumber(Date.now());
+    if (kind === 'gauntlet') {
+      this.openGauntletRung();
+      return;
+    }
     if (kind === 'coldCase') {
       const past = day - Math.max(1, index);
       this.openPlay({
@@ -272,6 +287,23 @@ export class App {
     });
   }
 
+  /** Open whichever rung of the month's Gauntlet the player is standing on. */
+  private openGauntletRung(): void {
+    const period = gauntletPeriod(Date.now());
+    this.store.update((s) => syncGauntlet(s, period));
+    const rung = this.store.state.gauntlet.index;
+    if (rung >= GAUNTLET_LENGTH) {
+      this.navigate('events');
+      return;
+    }
+    this.openPlay({
+      levelIndex: 0,
+      level: gauntletJam(period, rung),
+      mode: 'gauntlet',
+      title: gauntletRungLabel(rung),
+    });
+  }
+
   private openPlay(options: {
     levelIndex: number;
     level: LevelDef;
@@ -293,6 +325,7 @@ export class App {
       openMap: () => this.navigate('map'),
       playLevel: (index: number) => this.playLevel(index),
       refreshChrome: () => this.refreshChrome(),
+      advanceRun: () => this.openGauntletRung(),
     };
   }
 

@@ -86,6 +86,7 @@ The campaign is the game; the rest are appointments.
 | Cold Cases | From L70 | Every retired daily, replayable and untimed. |
 | Night Shift | Tuesdays | The same reads by headlight only. 1.5× Miles. |
 | Overtime Shifts | From L80 | A rotating set of ten rated jams a day, endlessly. |
+| Gridlock Gauntlet | Monthly | Twelve escalating rungs on one continuous path, with three checkpoint chests. A checkpoint is a place to stop, not only to carry on. |
 
 ## Design commitments that are enforced in code, not just intended
 
@@ -103,7 +104,7 @@ Vehicle identity is never colour-only: class silhouettes differ, facing reads fr
 
 ## Testing
 
-`npm test` runs 119 unit tests: sim geometry and every modifier, solver optimality and dead-end detection, the full 320-level campaign audited for validity, solvability, par, band mix, gate compliance and difficulty scaling, plus the economy, medals, Metered-Lot gating and save layers.
+`npm test` runs 122 unit tests: sim geometry and every modifier, solver optimality and dead-end detection, the full 320-level campaign audited for validity, solvability, par, band mix, gate compliance and difficulty scaling, plus the economy, medals, Metered-Lot gating and save layers.
 
 `npm run smoke` is the one that catches what unit tests cannot. It boots the real game in Chromium at phone resolution, clears levels by dispatching genuine pointer events, drags a blocked car to check it bumps rather than escapes, undoes a slide, opens a hint, plays a Night Shift lot, runs a Metered Lot dry to check the save-me appears and that declining lands on a breather, plays a level with the keyboard alone, walks every meta screen, and fails on any console error, page exception, failed request, stacked modal or empty screen.
 

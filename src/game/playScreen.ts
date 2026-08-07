@@ -11,6 +11,8 @@ import {
   bandForLevel,
   chapterPosition,
   GATES,
+  GAUNTLET_CHECKPOINTS,
+  GAUNTLET_LENGTH,
   getLevel,
   meteredLimit,
   patternIntroducedAt,
@@ -20,7 +22,13 @@ import {
 } from '../core/campaign';
 import { hintFrom, isStillSolvable, nextMoveHint } from '../core/solver';
 import { Band, BlockReason, LevelDef, Terrain, VehicleTag } from '../core/types';
-import { atCoinPinch, registerClear, TrunkReward, TUTORIAL_LEVELS } from '../meta/economy';
+import {
+  advanceGauntlet,
+  atCoinPinch,
+  registerClear,
+  TrunkReward,
+  TUTORIAL_LEVELS,
+} from '../meta/economy';
 import { DISTRICTS } from '../meta/districts';
 import { BoosterId } from '../meta/save';
 import { GameStore } from '../meta/store';
@@ -41,9 +49,11 @@ export interface PlayHost {
   openMap(): void;
   playLevel(index: number): void;
   refreshChrome(): void;
+  /** Continue a chained run, or return to the events hub when it is over. */
+  advanceRun?(): void;
 }
 
-export type PlayMode = 'campaign' | 'rush' | 'overtime' | 'night';
+export type PlayMode = 'campaign' | 'rush' | 'overtime' | 'night' | 'gauntlet';
 
 export interface PlayOptions {
   levelIndex: number;
@@ -55,6 +65,14 @@ export interface PlayOptions {
 
 /** Night Shift pays 1.5× Miles for the same reads, newly tense (GDD §9). */
 const NIGHT_MILE_BONUS = 1.5;
+
+/** Where a non-campaign jam says it is from, under the title. */
+const MODE_PLACE: Record<Exclude<PlayMode, 'campaign'>, string> = {
+  rush: 'Rush Hour',
+  night: 'Night Shift',
+  overtime: 'Overtime',
+  gauntlet: 'Gauntlet',
+};
 
 const AMBULANCE_WINDOW_MS = 30_000;
 /** Dispatcher pulses after this many bumps inside the window (GDD §17 test #6). */
@@ -416,11 +434,7 @@ export class PlayScreen {
     const place =
       this.mode === 'campaign'
         ? DISTRICTS[chapterPosition(this.levelIndex).district].name
-        : this.mode === 'rush'
-          ? 'Rush Hour'
-          : this.mode === 'night'
-            ? 'Night Shift'
-            : 'Overtime';
+        : MODE_PLACE[this.mode];
     this.patternNode.textContent = `${place} · ${pattern ? pattern.label : bandLabel(band)}`;
 
     this.audio.setBedIntensity(total === 0 ? 0 : 1 - remaining / total);
@@ -823,6 +837,12 @@ export class PlayScreen {
   private async finishSpecial(duration: number): Promise<void> {
     if (!this.view) return;
     const state = this.view.state;
+
+    if (this.mode === 'gauntlet') {
+      await this.finishGauntletRung(duration);
+      return;
+    }
+
     const coins = this.mode === 'rush' ? 150 : 90;
     const medallions = this.mode === 'rush' ? 5 : 0;
     const miles = Math.round(state.x.length * (this.mode === 'night' ? NIGHT_MILE_BONUS : 1));
@@ -871,6 +891,52 @@ export class PlayScreen {
         this.host.openMap();
       },
     });
+  }
+
+  /** One rung of the Gauntlet: bank it, pay any chest, and carry straight on. */
+  private async finishGauntletRung(duration: number): Promise<void> {
+    if (!this.view) return;
+    const state = this.view.state;
+    const chest = this.store.update((s) => {
+      s.wallet.miles += state.x.length;
+      s.stats.totalExits += state.x.length;
+      s.stats.jamsCleared++;
+      return advanceGauntlet(s, GAUNTLET_CHECKPOINTS, GAUNTLET_LENGTH);
+    });
+    this.host.refreshChrome();
+
+    if (chest) {
+      this.audio.coins(chest.coins);
+      // The path waits: a checkpoint is a place to stop, not only to carry on.
+      const carryOn = await new Promise<boolean>((resolve) => {
+        showSheet({
+          eyebrow: chest.label,
+          title: chest.rung >= GAUNTLET_LENGTH ? 'Gauntlet cleared.' : `Rung ${chest.rung} banked.`,
+          rows: [
+            { icon: '🪙', label: 'Coins', value: `+${formatNumber(chest.coins)}` },
+            { icon: '🎖️', label: 'Medallions', value: `+${chest.medallions}` },
+          ],
+          confirmLabel: 'Onward',
+          cancelLabel: 'Stop here',
+          onConfirm: () => resolve(true),
+          onDismiss: () => resolve(false),
+        });
+      });
+      if (!carryOn) {
+        this.host.goHome();
+        return;
+      }
+    } else {
+      this.audio.levelClear();
+    }
+
+    if (this.store.state.gauntlet.finished) {
+      toast('The month is yours.', '🏆');
+      this.host.goHome();
+      return;
+    }
+    void duration;
+    this.host.advanceRun?.();
   }
 
   private async presentTrunk(trunk: TrunkReward): Promise<void> {

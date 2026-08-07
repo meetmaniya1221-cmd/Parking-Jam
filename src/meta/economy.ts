@@ -627,6 +627,51 @@ function hash(str: string): number {
 }
 
 /* ------------------------------------------------------------------ *
+ * Gridlock Gauntlet (GDD §9)
+ * ------------------------------------------------------------------ */
+
+export interface GauntletChest {
+  rung: number;
+  coins: number;
+  medallions: number;
+  label: string;
+}
+
+/** Chests get heavier as the path does; the last one closes the month. */
+export function gauntletChest(rung: number): GauntletChest {
+  if (rung >= 12) return { rung, coins: 1200, medallions: 60, label: 'Finisher' };
+  if (rung >= 8) return { rung, coins: 600, medallions: 30, label: 'Checkpoint' };
+  return { rung, coins: 300, medallions: 15, label: 'Checkpoint' };
+}
+
+/** Start or resume the month's run, resetting when the period rolls over. */
+export function syncGauntlet(state: PlayerState, period: string): void {
+  if (state.gauntlet.period === period) return;
+  state.gauntlet = { period, index: 0, chestsClaimed: [], finished: false };
+}
+
+/**
+ * Bank a cleared rung. Returns the chest paid, if this rung carried one — the
+ * three checkpoints are what make a long path survivable.
+ */
+export function advanceGauntlet(
+  state: PlayerState,
+  checkpoints: readonly number[],
+  length: number,
+): GauntletChest | null {
+  state.gauntlet.index = Math.min(length, state.gauntlet.index + 1);
+  const rung = state.gauntlet.index;
+  if (state.gauntlet.index >= length) state.gauntlet.finished = true;
+
+  if (!checkpoints.includes(rung) || state.gauntlet.chestsClaimed.includes(rung)) return null;
+  const chest = gauntletChest(rung);
+  state.gauntlet.chestsClaimed.push(rung);
+  state.wallet.coins += chest.coins;
+  state.wallet.medallions += chest.medallions;
+  return chest;
+}
+
+/* ------------------------------------------------------------------ *
  * City Pass
  * ------------------------------------------------------------------ */
 

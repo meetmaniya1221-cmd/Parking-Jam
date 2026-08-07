@@ -525,6 +525,55 @@ export function rushHourJam(dayNumber: number): LevelDef {
   return generateLevel(spec);
 }
 
+/* ------------------------------------------------------------------ *
+ * Gridlock Gauntlet — one continuous path, twelve escalating jams (GDD §9)
+ * ------------------------------------------------------------------ */
+
+export const GAUNTLET_LENGTH = 12;
+/** Chests sit at these one-based rungs. */
+export const GAUNTLET_CHECKPOINTS: readonly number[] = [4, 8, 12];
+
+/** The Gauntlet resets monthly; this is the period key it is seeded from. */
+export function gauntletPeriod(now: number): string {
+  const d = new Date(now);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+}
+
+/**
+ * Rung `index` (0-based) of the month's Gauntlet. Difficulty climbs from a
+ * warm-up to a lot harder than anything in the campaign, because the whole
+ * point is a single continuous path you either walk or you do not.
+ */
+export function gauntletJam(period: string, index: number): LevelDef {
+  const rung = Math.max(0, Math.min(GAUNTLET_LENGTH - 1, index));
+  const seed = hashString(`gauntlet:${period}:${rung}`);
+  const pattern = PATTERNS[seed % PATTERNS.length];
+  const band = rung < 3 ? Band.Medium : rung < 9 ? Band.Hard : Band.Showcase;
+  const dims = { w: rung < 4 ? 6 : 7, h: rung < 4 ? 8 : rung < 9 ? 9 : 10 };
+  const vehicleCount = Math.round(lerp(9, 21, rung / (GAUNTLET_LENGTH - 1)));
+  const spec: LevelSpec = {
+    id: `GG-${period}-${rung}`,
+    index: 950 + rung,
+    seed,
+    band,
+    patternTags: [pattern.tag, 'gauntlet'],
+    w: dims.w,
+    h: dims.h,
+    streetSides: rung < 6 ? 3 : 4,
+    streetWidth: 0.8,
+    vehicleCount,
+    knotDepth: Math.round(lerp(4, 9, rung / (GAUNTLET_LENGTH - 1))),
+    distractorRatio: 0.45,
+    lengthMix: rung < 4 ? { 2: 6, 3: 2 } : { 2: 5, 3: 3, 4: 2 },
+    modifiers: modifiersFor(60 + rung * 12, band, pattern.tag, dims),
+  };
+  return generateLevel(spec);
+}
+
+export function gauntletRungLabel(index: number): string {
+  return `Rung ${Math.min(GAUNTLET_LENGTH, index + 1)} of ${GAUNTLET_LENGTH}`;
+}
+
 /** Rush Hour jams are named, because a daily must feel signed. */
 const RUSH_NAMES: readonly string[] = [
   'The Fishbone',

@@ -1,12 +1,17 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import {
   bandForLevel,
+  GAUNTLET_CHECKPOINTS,
+  GAUNTLET_LENGTH,
+  gauntletJam,
   meteredLimit,
   patternIntroducedAt,
   TOTAL_LEVELS,
 } from '../src/core/campaign';
+import { solveLevel } from '../src/core/solver';
 import { Rng } from '../src/core/rng';
 import {
+  advanceGauntlet,
   advanceGreenLight,
   atCoinPinch,
   beautificationCount,
@@ -42,6 +47,7 @@ import {
   pendingIncome,
   refreshDispatch,
   registerClear,
+  syncGauntlet,
   rollTrunk,
   TICKET_CAP,
   TRUNK_ODDS,
@@ -494,4 +500,39 @@ describe('beautification', () => {
     beautify(state, 0);
     expect(state.wallet.medallions).toBe(7);
   });
+});
+
+describe('gridlock gauntlet', () => {
+  it('resets when the month rolls over and keeps the run inside one', () => {
+    syncGauntlet(state, '2026-08');
+    state.gauntlet.index = 5;
+    syncGauntlet(state, '2026-08');
+    expect(state.gauntlet.index).toBe(5);
+    syncGauntlet(state, '2026-09');
+    expect(state.gauntlet.index).toBe(0);
+    expect(state.gauntlet.chestsClaimed).toEqual([]);
+  });
+
+  it('pays a chest at each checkpoint and never twice', () => {
+    syncGauntlet(state, '2026-08');
+    let chests = 0;
+    for (let i = 0; i < GAUNTLET_LENGTH; i++) {
+      if (advanceGauntlet(state, GAUNTLET_CHECKPOINTS, GAUNTLET_LENGTH)) chests++;
+    }
+    expect(chests).toBe(GAUNTLET_CHECKPOINTS.length);
+    expect(state.gauntlet.finished).toBe(true);
+    expect(state.wallet.medallions).toBe(15 + 30 + 60);
+
+    // Past the end, the path stops paying.
+    expect(advanceGauntlet(state, GAUNTLET_CHECKPOINTS, GAUNTLET_LENGTH)).toBeNull();
+    expect(state.gauntlet.index).toBe(GAUNTLET_LENGTH);
+  });
+
+  it('escalates the rungs it generates', () => {
+    const first = gauntletJam('2026-08', 0);
+    const last = gauntletJam('2026-08', GAUNTLET_LENGTH - 1);
+    expect(first.vehicles.length).toBeLessThan(last.vehicles.length);
+    expect(solveLevel(first).solvable).toBe(true);
+    expect(solveLevel(last).solvable).toBe(true);
+  }, 60_000);
 });

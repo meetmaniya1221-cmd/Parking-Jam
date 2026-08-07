@@ -262,6 +262,34 @@ body {
   background: linear-gradient(150deg, #4a3242, #253141);
 }
 
+.card--gauntlet {
+  background: linear-gradient(150deg, #3d3520, #251f14);
+}
+
+.gauntlet {
+  display: flex;
+  gap: 4px;
+}
+
+.gauntlet__rung {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 22px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.08);
+  font-size: 0.7em;
+}
+
+.gauntlet__rung--chest {
+  background: rgba(255, 209, 102, 0.2);
+}
+
+.gauntlet__rung--done {
+  background: var(--mint-deep);
+}
+
 .card--night {
   background: linear-gradient(150deg, #1d2a44, #141b28);
 }

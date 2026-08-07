@@ -9,6 +9,9 @@
 import { AudioEngine } from '../audio/audio';
 import {
   firstLevelOfDistrict,
+  GAUNTLET_CHECKPOINTS,
+  GAUNTLET_LENGTH,
+  gauntletPeriod,
   isUnlocked,
   levelsInDistrict,
   overtimeSet,
@@ -76,7 +79,7 @@ export interface Screen {
 
 export interface ScreenHost {
   playLevel(index: number): void;
-  playSpecial(kind: 'rush' | 'overtime' | 'night' | 'coldCase', index?: number): void;
+  playSpecial(kind: 'rush' | 'overtime' | 'night' | 'coldCase' | 'gauntlet', index?: number): void;
   refreshChrome(): void;
 }
 
@@ -930,6 +933,53 @@ export function createEventsScreen({ store, audio, host }: Deps): Screen {
             class: 'card__note',
             text: `Lifetime: ${s.rush.clears}/${s.rush.attempts} cleared`,
           }),
+        ),
+      );
+
+      // Gridlock Gauntlet — one continuous path, reset monthly.
+      const period = gauntletPeriod(Date.now());
+      const run = s.gauntlet.period === period ? s.gauntlet : { index: 0, finished: false };
+      const rungs = el('div', { class: 'gauntlet' });
+      for (let i = 1; i <= GAUNTLET_LENGTH; i++) {
+        rungs.appendChild(
+          el('div', {
+            class: [
+              'gauntlet__rung',
+              i <= run.index ? 'gauntlet__rung--done' : '',
+              GAUNTLET_CHECKPOINTS.includes(i) ? 'gauntlet__rung--chest' : '',
+            ]
+              .filter(Boolean)
+              .join(' '),
+            text: GAUNTLET_CHECKPOINTS.includes(i) ? '🎁' : '',
+          }),
+        );
+      }
+      nodes.push(
+        section(
+          'Gridlock Gauntlet',
+          el(
+            'div',
+            { class: 'card card--gauntlet' },
+            el('p', { class: 'card__eyebrow', text: 'Monthly · one continuous path' }),
+            el('h2', {
+              class: 'card__title',
+              text: run.finished
+                ? 'The month is yours.'
+                : `${run.index} of ${GAUNTLET_LENGTH} rungs cleared`,
+            }),
+            rungs,
+            el('p', {
+              class: 'card__body',
+              text: 'Twelve escalating jams with three checkpoint chests. Stop whenever — the path waits.',
+            }),
+            run.finished
+              ? null
+              : button(run.index > 0 ? 'Continue the path' : 'Start the path', {
+                  variant: 'primary',
+                  icon: '🏆',
+                  onTap: () => host.playSpecial('gauntlet'),
+                }),
+          ),
         ),
       );
 

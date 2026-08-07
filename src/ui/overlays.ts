@@ -332,6 +332,8 @@ export function showSheet(opts: {
   confirmLabel?: string;
   cancelLabel?: string;
   onConfirm?: () => void;
+  /** Fired when the sheet closes any way other than confirming. */
+  onDismiss?: () => void;
 }): OverlayHandle {
   const rows = opts.rows?.length
     ? el(
@@ -359,13 +361,20 @@ export function showSheet(opts: {
     rows,
     actions,
   );
-  const handle = openOverlay(content, { dismissible: true });
+  let confirmed = false;
+  const handle = openOverlay(content, {
+    dismissible: true,
+    onClose: () => {
+      if (!confirmed) opts.onDismiss?.();
+    },
+  });
 
   if (opts.onConfirm) {
     actions.appendChild(
       button(opts.confirmLabel ?? 'Confirm', {
         variant: 'primary',
         onTap: () => {
+          confirmed = true;
           opts.onConfirm!();
           handle.close();
         },

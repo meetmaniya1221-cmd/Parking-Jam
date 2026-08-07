@@ -408,6 +408,55 @@ async function checkPatternIntro(page) {
   await page.screenshot({ path: `${SHOTS}/13-pattern-intro.png` });
 }
 
+/** The Gauntlet is one continuous path: clearing a rung must carry straight on. */
+async function checkGauntlet(page) {
+  await page.evaluate(() => window.__gridlock.seed({ level: 120 }));
+  await page.locator('.tab--events').click();
+  await page.waitForTimeout(500);
+  const start = page.locator('.card--gauntlet .btn');
+  if (!(await start.isVisible().catch(() => false))) {
+    problems.push('gauntlet: no card on the events screen');
+    return;
+  }
+  await start.click();
+  await page.waitForSelector('.lot__canvas');
+  await page.waitForTimeout(800);
+  await page.screenshot({ path: `${SHOTS}/14-gauntlet.png` });
+
+  const first = await lotState(page);
+  if (!first) {
+    problems.push('gauntlet: first rung failed to load');
+    return;
+  }
+  step(`gauntlet rung 1: ${first.total} cars`);
+
+  await clearLot(page, 'gauntlet rung 1');
+  await page.waitForTimeout(1600);
+  const second = await lotState(page);
+  if (!second || second.remaining === 0) {
+    problems.push('gauntlet: clearing a rung did not carry on to the next');
+    return;
+  }
+  step(`carried on to rung 2: ${second.total} cars`);
+
+  const banked = await page.evaluate(
+    () => JSON.parse(localStorage.getItem('gridlock-city:save:v1')).gauntlet.index,
+  );
+  if (banked !== 1) problems.push(`gauntlet: banked ${banked} rungs after clearing one`);
+
+  // A checkpoint must be a place to stop, not only to carry on.
+  await page.evaluate(() => {
+    const g = window.__gridlock;
+    g.seed({});
+    const key = 'gridlock-city:save:v1';
+    const save = JSON.parse(localStorage.getItem(key));
+    save.gauntlet.index = 3;
+    localStorage.setItem(key, JSON.stringify(save));
+  });
+  await page.locator('.play__headRow .iconBtn').first().click();
+  await page.waitForTimeout(400);
+}
+
 async function run(page) {
   await page.goto(URL, { waitUntil: 'domcontentloaded' });
   await page.waitForSelector('.lot__canvas');
@@ -467,6 +516,7 @@ async function run(page) {
   await checkMeteredLot(page);
   await checkResume(page);
   await checkPatternIntro(page);
+  await checkGauntlet(page);
 
   // Night Shift renders through a headlight mask — a whole extra draw path.
   await page.locator('.tab--events').click();
