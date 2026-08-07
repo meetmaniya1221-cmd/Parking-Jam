@@ -560,24 +560,27 @@ export interface GenerateOptions {
 }
 
 /**
- * How many cars may drive off on move one.
+ * What share of the lot may drive off on move one.
  *
  * Too few and the lot reads as a wall; too many and there is no read at all.
  * Breathers want a generous opening (goal-gradient candy), stretch jams want
- * the player to have to look for the thread.
+ * the player to have to look for the thread. Measured as a *share*, because
+ * four free cars out of eight and four out of twenty are nothing alike.
  */
-function opennessFit(open: number, band: Band): number {
+function opennessFit(open: number, band: Band, vehicles: number): number {
+  if (open === 0) return -14; // a lot with no legal first move is never shippable
+  if (vehicles === 0) return 0;
   const [lo, hi] =
     band === Band.Easy
-      ? [3, 10]
+      ? [0.35, 0.9]
       : band === Band.Hard
-        ? [2, 5]
+        ? [0.12, 0.4]
         : band === Band.Showcase
-          ? [2, 5]
-          : [2, 6];
-  if (open === 0) return -14; // a lot with no legal first move is never shippable
-  if (open < lo) return (open - lo) * 3;
-  if (open > hi) return (hi - open) * 2;
+          ? [0.15, 0.45]
+          : [0.2, 0.55];
+  const share = open / vehicles;
+  if (share < lo) return (share - lo) * 30;
+  if (share > hi) return (hi - share) * 20;
   return 3;
 }
 
@@ -606,7 +609,7 @@ export function generateLevel(spec: LevelSpec, opts: GenerateOptions = {}): Leve
     // Overshooting the target depth is a bonus, not a miss.
     const knotScore = Math.min(0, level.knotDepth - spec.knotDepth) * 5;
     const distractorScore = -Math.abs(metrics.distractorRatio - spec.distractorRatio) * 6;
-    const opennessScore = opennessFit(metrics.openExits, spec.band);
+    const opennessScore = opennessFit(metrics.openExits, spec.band, level.vehicles.length);
     const score = countScore + knotScore + distractorScore + opennessScore;
 
     if (score > bestScore) {
@@ -616,7 +619,7 @@ export function generateLevel(spec: LevelSpec, opts: GenerateOptions = {}): Leve
     if (
       level.vehicles.length === spec.vehicleCount &&
       level.knotDepth >= spec.knotDepth &&
-      opennessFit(metrics.openExits, spec.band) > 0
+      opennessFit(metrics.openExits, spec.band, level.vehicles.length) > 0
     ) {
       return level;
     }

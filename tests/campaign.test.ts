@@ -164,6 +164,22 @@ describe('every shipped jam', () => {
     }
   }, 180_000);
 
+  it('tightens the opening band by band', () => {
+    const median = (band: Band) => {
+      const values: number[] = [];
+      for (let i = 21; i <= TOTAL_LEVELS; i++) {
+        const level = getLevel(i);
+        if (level.band === band) values.push(bumpLikelihood(level));
+      }
+      values.sort((a, b) => a - b);
+      return values[Math.floor(values.length / 2)];
+    };
+    // Openness is scored as a share of the lot, so this holds at every size.
+    expect(median(Band.Easy)).toBeLessThan(median(Band.Medium));
+    expect(median(Band.Medium)).toBeLessThan(median(Band.Hard));
+    expect(median(Band.Hard)).toBeGreaterThan(0.5);
+  }, 180_000);
+
   it('lets every VIP leave before the rope drops', () => {
     for (const i of indices) {
       const level = getLevel(i);
@@ -191,8 +207,16 @@ describe('endless content', () => {
     const b = rushHourJam(42);
     expect(a.vehicles).toEqual(b.vehicles);
     expect(solveLevel(a).solvable).toBe(true);
-    expect(a.vehicles.length).toBeGreaterThanOrEqual(10);
   }, 60_000);
+
+  it('makes the daily genuinely the hardest jam of the day', () => {
+    for (const day of [1, 42, 100, 777]) {
+      const jam = rushHourJam(day);
+      const metrics = analyseDifficulty(jam);
+      expect(jam.vehicles.length, `day ${day} cars`).toBeGreaterThanOrEqual(14);
+      expect(metrics.knotDepth, `day ${day} knot depth`).toBeGreaterThanOrEqual(6);
+    }
+  }, 120_000);
 });
 
 describe('determinism', () => {

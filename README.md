@@ -58,6 +58,15 @@ Measured across 120 generated lots on a 7×10 grid:
 
 So difficulty lives in density, distractors and vocabulary, and frontage width became a *simplicity* lever — reserved for the opening levels and for the deliberately constrained Plug pattern.
 
+The related trap: how open a lot feels on move one has to be scored as a *share* of the cars, not a count. Four free cars out of eight and four out of twenty are nothing alike, and an absolute threshold quietly mis-graded every large lot — including the daily Rush Hour, which was generating at knot depth 3 while advertising itself as the hardest jam of the day. Measured as a share, the bands come out clean:
+
+| Band | Median bump likelihood |
+|---|---|
+| Breather | 0.33 |
+| Standard | 0.50 |
+| Stretch | 0.60 |
+| Showcase | 0.57 |
+
 ### `src/view` — the lot you can touch
 
 A 2D toy diorama. The ground is a foreshortened grid baked to an offscreen canvas and blitted, so a frame costs one image draw plus the vehicles. Each vehicle is a chunky bevelled brick: a dark base plate, three lit side faces, an inset top, wheels at the axle line and a rim that keeps bumper-to-bumper cars of the same colour distinct.
@@ -104,7 +113,7 @@ Vehicle identity is never colour-only: class silhouettes differ, facing reads fr
 
 ## Testing
 
-`npm test` runs 122 unit tests: sim geometry and every modifier, solver optimality and dead-end detection, the full 320-level campaign audited for validity, solvability, par, band mix, gate compliance and difficulty scaling, plus the economy, medals, Metered-Lot gating and save layers.
+`npm test` runs 124 unit tests: sim geometry and every modifier, solver optimality and dead-end detection, the full 320-level campaign audited for validity, solvability, par, band mix, gate compliance and difficulty scaling, plus the economy, medals, Metered-Lot gating and save layers.
 
 `npm run smoke` is the one that catches what unit tests cannot. It boots the real game in Chromium at phone resolution, clears levels by dispatching genuine pointer events, drags a blocked car to check it bumps rather than escapes, undoes a slide, opens a hint, plays a Night Shift lot, runs a Metered Lot dry to check the save-me appears and that declining lands on a breather, plays a level with the keyboard alone, walks every meta screen, and fails on any console error, page exception, failed request, stacked modal or empty screen.
 

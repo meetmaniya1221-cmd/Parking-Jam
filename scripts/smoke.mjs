@@ -559,6 +559,38 @@ async function run(page) {
     await dismissAd(page);
     await page.waitForTimeout(400);
   }
+
+  // With the whole sequence behind us, every gated surface should be present.
+  for (const tab of ['events', 'depot']) {
+    await page.locator(`.tab--${tab}`).click();
+    await page.waitForTimeout(500);
+    await page.screenshot({ path: `${SHOTS}/15-${tab}-unlocked.png`, fullPage: true });
+    // Section titles are uppercased by CSS, so compare case-insensitively.
+    const body = (await page.locator('.screen__body').innerText()).toLowerCase();
+    const expected =
+      tab === 'events'
+        ? [
+            'rush hour',
+            'gridlock gauntlet',
+            'cold cases',
+            'night shift',
+            'impound',
+            'city pass',
+            'overtime',
+          ]
+        : [
+            'city income',
+            'morning commute',
+            'dispatch board',
+            'service medals',
+            'streaks',
+            'depot shop',
+          ];
+    for (const section of expected) {
+      if (!body.includes(section)) problems.push(`${tab}: "${section}" missing at full unlock`);
+    }
+  }
+  step('every gated surface present at full unlock');
 }
 
 async function main() {
