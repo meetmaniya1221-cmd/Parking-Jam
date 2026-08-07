@@ -20,7 +20,7 @@ import {
 } from '../core/campaign';
 import { hintFrom, isStillSolvable, nextMoveHint } from '../core/solver';
 import { Band, BlockReason, LevelDef, Terrain, VehicleTag } from '../core/types';
-import { atCoinPinch, registerClear, TrunkReward } from '../meta/economy';
+import { atCoinPinch, registerClear, TrunkReward, TUTORIAL_LEVELS } from '../meta/economy';
 import { DISTRICTS } from '../meta/districts';
 import { BoosterId } from '../meta/save';
 import { GameStore } from '../meta/store';
@@ -236,8 +236,8 @@ export class PlayScreen {
         : null;
 
     this.view = new LotView(this.canvas, this.level, this.audio, this.viewContext(), {
-      onExit: (vi, remaining) => this.onExit(vi, remaining),
-      onBump: (vi, blockerVi, reason) => this.onBump(vi, blockerVi, reason),
+      onExit: (vi) => this.onExit(vi),
+      onBump: (_vi, _blockerVi, reason) => this.onBump(reason),
       onSlide: () => {
         this.dismissCoach(true);
         this.scheduleDeadEndCheck();
@@ -465,7 +465,7 @@ export class PlayScreen {
    * Level events
    * ---------------------------------------------------------------- */
 
-  private onExit(vi: number, remaining: number): void {
+  private onExit(vi: number): void {
     this.dismissCoach(true);
     const tags = this.level.vehicles[vi].tags;
     if (tags & VehicleTag.Ambulance && this.ambulanceDeadline > performance.now()) {
@@ -476,10 +476,9 @@ export class PlayScreen {
       this.audio.uiConfirm();
     }
     if (tags & VehicleTag.Trunk) this.trunksBanked.push(vi);
-    if (remaining > 0) this.view?.setHints([]);
   }
 
-  private onBump(vi: number, blockerVi: number, reason: BlockReason): void {
+  private onBump(reason: BlockReason): void {
     const now = performance.now();
     this.bumpTimes.push(now);
     this.bumpTimes = this.bumpTimes.filter((t) => now - t < PULSE_WINDOW_MS);
@@ -498,8 +497,6 @@ export class PlayScreen {
       window.setTimeout(() => dispatcher?.node.classList.remove('booster--pulse'), 6000);
       this.bumpTimes = [];
     }
-    void vi;
-    void blockerVi;
   }
 
   private onLastCar(): void {
@@ -689,7 +686,7 @@ export class PlayScreen {
 
   private scheduleCoach(): void {
     window.clearTimeout(this.coachTimer);
-    if (this.levelIndex > 3 || this.store.state.flags.tutorialSelfDriven) return;
+    if (this.levelIndex > TUTORIAL_LEVELS || this.store.state.flags.tutorialSelfDriven) return;
     const captions = [
       'Drag a car the way it faces.',
       'Blocked? It just honks. No harm done.',
@@ -706,15 +703,20 @@ export class PlayScreen {
     }, 4000);
   }
 
-  /** Any correct unprompted move suppresses every remaining prompt. */
+  /**
+   * Any correct unprompted move suppresses every remaining prompt. Only the
+   * tutorial's own highlight is cleared — a Dispatcher Call the player paid for
+   * shows three cars and must survive the first of them moving.
+   */
   private dismissCoach(permanently: boolean): void {
+    if (this.levelIndex > TUTORIAL_LEVELS) return;
     window.clearTimeout(this.coachTimer);
     this.coachNode.hidden = true;
     this.view?.setHints([]);
-    if (permanently && this.levelIndex <= 3) {
+    if (permanently) {
       this.store.update((s) => void (s.flags.tutorialSelfDriven = true));
     }
-    if (this.levelIndex <= 3) this.scheduleCoach();
+    this.scheduleCoach();
   }
 
   /* ---------------------------------------------------------------- *

@@ -207,10 +207,28 @@ async function checkInteractions(page) {
     }
   }
 
-  // The Dispatcher hint must always name a car that can actually leave.
-  await page.locator('.boosters .btn').nth(2).click();
+  // The Dispatcher hint must name cars that really can leave, and a hint the
+  // player paid for must survive the move it prompted.
+  await page.locator('.boosters .btn', { hasText: 'Dispatcher' }).click();
   await page.waitForTimeout(500);
-  await page.screenshot({ path: `${SHOTS}/08-hint.png` });
+  const hinted = await page.evaluate(() => window.__gridlock.hintedVehicles());
+  if (hinted.length === 0) {
+    problems.push('hint: the Dispatcher highlighted nothing');
+  } else {
+    const canLeave = await page.evaluate(() => window.__gridlock.exitable());
+    if (!canLeave.includes(hinted[0])) {
+      problems.push(`hint: car ${hinted[0]} was named but cannot leave`);
+    }
+    await page.screenshot({ path: `${SHOTS}/08-hint.png` });
+    await tapVehicle(page, hinted[0]);
+    await page.waitForTimeout(500);
+    const still = await page.evaluate(() => window.__gridlock.hintedVehicles());
+    if (hinted.length > 1 && still.length === 0) {
+      problems.push('hint: a paid hint was cleared by the first move it prompted');
+    } else {
+      step(`hint named ${hinted.length} cars and survived the first exit`);
+    }
+  }
 }
 
 /** The lot must be playable with a keyboard alone. */

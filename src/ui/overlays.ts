@@ -31,20 +31,31 @@ export interface OverlayOptions {
   onClose?: () => void;
 }
 
+const FOCUSABLE = 'button:not(:disabled), select, input, [href], [tabindex]:not([tabindex="-1"])';
+
 export function openOverlay(content: HTMLElement, options: OverlayOptions = {}): OverlayHandle {
   const host = overlayHost ?? document.body;
   const scrim = el('div', { class: `overlay ${options.className ?? ''}`.trim() });
-  const panel = el('div', { class: 'overlay__panel' }, content);
+  const panel = el('div', {
+    class: 'overlay__panel',
+    aria: { modal: 'true' },
+  });
+  panel.setAttribute('role', 'dialog');
+  panel.appendChild(content);
   scrim.appendChild(panel);
 
+  const returnFocus = document.activeElement as HTMLElement | null;
   let closed = false;
   const close = () => {
     if (closed) return;
     closed = true;
     openCount--;
+    window.removeEventListener('keydown', onKey, true);
     scrim.classList.add('overlay--closing');
     window.setTimeout(() => scrim.remove(), 180);
     options.onClose?.();
+    // Hand focus back where it came from, so the keyboard does not reset.
+    if (returnFocus?.isConnected) returnFocus.focus();
   };
 
   if (options.dismissible !== false) {
@@ -52,19 +63,34 @@ export function openOverlay(content: HTMLElement, options: OverlayOptions = {}):
       if (e.target === scrim) close();
     });
   }
+
   const onKey = (e: KeyboardEvent) => {
     if (e.key === 'Escape' && options.dismissible !== false) {
+      e.preventDefault();
       close();
-      window.removeEventListener('keydown', onKey);
+      return;
+    }
+    if (e.key !== 'Tab') return;
+    // Trap Tab inside the dialog; the page behind it is not reachable.
+    const focusable = Array.from(panel.querySelectorAll<HTMLElement>(FOCUSABLE));
+    if (focusable.length === 0) return;
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    const active = document.activeElement;
+    if (e.shiftKey && (active === first || !panel.contains(active))) {
+      e.preventDefault();
+      last.focus();
+    } else if (!e.shiftKey && active === last) {
+      e.preventDefault();
+      first.focus();
     }
   };
-  window.addEventListener('keydown', onKey);
+  window.addEventListener('keydown', onKey, true);
 
   openCount++;
   host.appendChild(scrim);
   requestAnimationFrame(() => scrim.classList.add('overlay--open'));
-  // Move focus into the panel so keyboard and screen-reader users land here.
-  requestAnimationFrame(() => panel.querySelector<HTMLElement>('button, [tabindex]')?.focus());
+  requestAnimationFrame(() => panel.querySelector<HTMLElement>(FOCUSABLE)?.focus());
   return { close, root: panel };
 }
 

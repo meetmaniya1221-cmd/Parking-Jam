@@ -26,6 +26,12 @@ import {
 
 type TabId = 'map' | 'depot' | 'play' | 'events' | 'garage';
 
+function formatPlayTime(ms: number): string {
+  const minutes = Math.round(ms / 60_000);
+  if (minutes < 60) return `${minutes}m`;
+  return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
+}
+
 const TABS: Array<{ id: TabId; icon: string; label: string }> = [
   { id: 'map', icon: '🗺️', label: 'City' },
   { id: 'depot', icon: '🏭', label: 'Depot' },
@@ -162,8 +168,11 @@ export class App {
       w.keys > 0 ? pill('🔑', formatNumber(w.keys), 'pill--muted') : el('span'),
     );
     for (const node of Array.from(this.tabBar.children)) {
-      const el2 = node as HTMLElement;
-      el2.classList.toggle('tab--active', el2.classList.contains(`tab--${this.current}`));
+      const tab = node as HTMLElement;
+      const active = tab.classList.contains(`tab--${this.current}`);
+      tab.classList.toggle('tab--active', active);
+      if (active) tab.setAttribute('aria-current', 'page');
+      else tab.removeAttribute('aria-current');
     }
   }
 
@@ -423,7 +432,9 @@ export class App {
         'div',
         { class: 'settings__stats' },
         el('p', {
-          text: `${stats.jamsCleared} jams cleared · ${stats.totalExits} cars sent home · ${stats.cleanExits} clean exits`,
+          text:
+            `${stats.jamsCleared} jams cleared · ${stats.totalExits} cars sent home · ` +
+            `${stats.cleanExits} clean exits · ${formatPlayTime(stats.playMs)} at the wheel`,
         }),
         el('p', {
           class: 'settings__fine',

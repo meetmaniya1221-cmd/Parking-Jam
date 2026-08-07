@@ -755,8 +755,19 @@ body {
   transform: scale(1.15);
 }
 
-:root.left-handed .tabbar {
+/* Left-handed layout mirrors the thumb-zone controls (GDD §14). */
+:root.left-handed .tabbar,
+:root.left-handed .boosters,
+:root.left-handed .play__headRow,
+:root.left-handed .sheet__actions,
+:root.left-handed .card__actions,
+:root.left-handed .district__actions {
   direction: rtl;
+}
+
+:root.left-handed .btn,
+:root.left-handed .tab {
+  direction: ltr;
 }
 
 /* ------------------------------------------------------------------ *

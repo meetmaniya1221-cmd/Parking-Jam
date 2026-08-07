@@ -176,13 +176,12 @@ export interface PlayerState {
   resume: ResumeState | null;
 
   flags: {
+    /** True once the three tutorial jams are behind the player. */
     tutorialDone: boolean;
     /** Suppresses the guided-hand prompts once the player moves unprompted. */
     tutorialSelfDriven: boolean;
-    notificationsAsked: boolean;
-    seenIntro: boolean;
+    /** True once the first district timelapse has played. */
     seenTimelapse: boolean;
-    seenPatterns: string[];
   };
 
   settings: Settings;
@@ -284,10 +283,7 @@ export function createPlayerState(now: number = Date.now()): PlayerState {
     flags: {
       tutorialDone: false,
       tutorialSelfDriven: false,
-      notificationsAsked: false,
-      seenIntro: false,
       seenTimelapse: false,
-      seenPatterns: [],
     },
     settings: defaultSettings(),
   };
@@ -330,11 +326,7 @@ export function migrate(raw: unknown, now: number = Date.now()): PlayerState {
     stats: { ...base.stats, ...saved.stats },
     ads: { ...base.ads, ...saved.ads },
     resume: saved.resume ?? null,
-    flags: {
-      ...base.flags,
-      ...saved.flags,
-      seenPatterns: saved.flags?.seenPatterns ?? [],
-    },
+    flags: { ...base.flags, ...saved.flags },
     settings: { ...base.settings, ...saved.settings },
   };
 

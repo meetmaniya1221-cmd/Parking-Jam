@@ -15,6 +15,8 @@ import { LIVERY_SETS } from './garage';
 import { BoosterId, dayStamp, DispatchTask, PlayerState } from './save';
 
 export const INCOME_CAP_HOURS = 4;
+/** Jams L1–L3 are the guided opening (GDD §3 Stage 2). */
+export const TUTORIAL_LEVELS = 3;
 export const MILES_PER_TIER = 100;
 export const PASS_TIERS = 40;
 export const CLEAN_RUN_MILESTONE = 5;
@@ -268,6 +270,7 @@ export function registerClear(state: PlayerState, input: ClearInput): ClearRewar
     state.progress.nextLevel = input.levelIndex + 1;
     state.progress.highest = Math.max(state.progress.highest, state.progress.nextLevel);
   }
+  if (input.levelIndex >= TUTORIAL_LEVELS) state.flags.tutorialDone = true;
   state.resume = null;
 
   advanceDispatch(state, 'clear', 1);

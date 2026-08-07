@@ -28,6 +28,8 @@ export interface GridlockDebug {
   meteredLimitFor(index: number): number | null;
   /** Burn one slide on a move that clears nothing. False when none is left. */
   wasteAMove(): boolean;
+  /** Vehicles the Dispatcher Call is currently highlighting. */
+  hintedVehicles(): number[];
   version: string;
 }
 
@@ -63,6 +65,9 @@ const handle: GridlockDebug = {
   },
   meteredLimitFor(index: number): number | null {
     return meteredLimit(index, getLevel(index).parSlides);
+  },
+  hintedVehicles(): number[] {
+    return handle.lotView ? handle.lotView.hintedVehicles() : [];
   },
   wasteAMove(): boolean {
     const view = handle.lotView;

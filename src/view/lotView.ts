@@ -394,6 +394,11 @@ export class LotView {
     this.hintIds = ids;
   }
 
+  /** Cars still highlighted by a Dispatcher Call, minus any that have left. */
+  hintedVehicles(): number[] {
+    return this.hintIds.filter((vi) => !this.state.gone[vi]);
+  }
+
   destroy(): void {
     this.destroyed = true;
     cancelAnimationFrame(this.raf);
