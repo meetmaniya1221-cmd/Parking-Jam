@@ -117,6 +117,8 @@ Vehicle identity is never colour-only: class silhouettes differ, facing reads fr
 
 `npm run smoke` is the one that catches what unit tests cannot. It boots the real game in Chromium at phone resolution, clears levels by dispatching genuine pointer events, drags a blocked car to check it bumps rather than escapes, undoes a slide, opens a hint, plays a Night Shift lot, runs a Metered Lot dry to check the save-me appears and that declining lands on a breather, plays a level with the keyboard alone, walks every meta screen, and fails on any console error, page exception, failed request, stacked modal or empty screen.
 
+`npm run firstrun` measures the opening: time from navigation to a touchable lot, and whether the guiding hand arrives after four seconds of hesitation and points at a car that can actually leave. It reports around 230 ms to touchable on this machine.
+
 `npm run journey` goes the long way round: it restores two districts through the UI, watches the timelapse, collects capped income, builds a landmark, buys and equips a livery, then screenshots every accessibility mode and three viewports down to 320px, failing on any sideways scroll. `npm run perf` reports frame times.
 
 Both write screenshots to `/tmp/gridlock-shots` for eyeballing.

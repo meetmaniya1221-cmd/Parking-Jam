@@ -656,15 +656,22 @@ export function drawVehicle(
 
   drawVehicleDetail(ctx, v, tx, ty, tw, th, radius, palette, body);
 
-  if (v.highlight > 0 || v.hint > 0 || v.flash > 0) {
+  // Selection, hint and blocker-flash all speak through the same rim, at
+  // volumes that match what they cost: a hint is paid for, so it shouts.
+  if (v.highlight > 0.02 || v.hint > 0.02 || v.flash > 0.02) {
     const strength = Math.max(v.highlight, v.hint, v.flash);
-    ctx.strokeStyle =
-      v.flash > 0
-        ? withAlpha(palette.coral, v.flash)
-        : v.hint > 0
-          ? withAlpha(palette.lemon, v.hint)
-          : withAlpha(palette.cream, v.highlight * 0.9);
-    ctx.lineWidth = Math.max(2, cw * 0.055) * (1 + strength * 0.5);
+    const colour =
+      v.flash > 0.02 ? palette.coral : v.hint > 0.02 ? palette.lemon : palette.cream;
+
+    if (v.hint > 0.02 || v.flash > 0.02) {
+      ctx.strokeStyle = withAlpha(colour, strength * 0.35);
+      ctx.lineWidth = Math.max(4, cw * 0.16) * strength;
+      roundRect(ctx, tx, ty, tw, th, radius);
+      ctx.stroke();
+    }
+
+    ctx.strokeStyle = withAlpha(colour, v.flash > 0.02 ? v.flash : v.hint > 0.02 ? 1 : strength * 0.9);
+    ctx.lineWidth = Math.max(2.5, cw * 0.06) * (1 + strength * 0.4);
     roundRect(ctx, tx, ty, tw, th, radius);
     ctx.stroke();
   }

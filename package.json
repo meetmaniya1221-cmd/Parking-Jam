@@ -14,7 +14,8 @@
     "verify": "npm run typecheck && npm run test && npm run build",
     "smoke": "node scripts/smoke.mjs",
     "perf": "node scripts/perf.mjs",
-    "journey": "node scripts/journey.mjs"
+    "journey": "node scripts/journey.mjs",
+    "firstrun": "node scripts/firstrun.mjs"
   },
   "devDependencies": {
     "playwright": "^1.49.0",
