@@ -393,13 +393,20 @@ async function checkResume(page) {
 
 /** Arriving at a pattern's introduction level must explain it, once. */
 async function checkPatternIntro(page) {
-  // Level 26 introduces the Slick Corridor.
-  await page.evaluate(() => window.__gridlock.jumpTo(26));
+  // Ask the app which level teaches the Slick Corridor rather than restating
+  // the schedule here — a hard-coded level number silently stops testing the
+  // thing it names as soon as the difficulty curve is retuned.
+  const intro = await page.evaluate(() => window.__gridlock.patternIntro('slickCorridor'));
+  if (!intro) {
+    problems.push('pattern intro: the app reports no Slick Corridor intro level');
+    return;
+  }
+  await page.evaluate((n) => window.__gridlock.jumpTo(n), intro);
   await page.waitForSelector('.lot__canvas');
   await page.waitForTimeout(500);
   const coach = page.locator('.coach');
   if (!(await coach.isVisible().catch(() => false))) {
-    problems.push('pattern intro: no explanation shown on arrival');
+    problems.push(`pattern intro: no explanation shown on arrival at L${intro}`);
     return;
   }
   const text = await coach.innerText();

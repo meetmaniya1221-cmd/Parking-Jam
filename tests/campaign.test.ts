@@ -3,6 +3,7 @@ import {
   bandForLevel,
   chapterPosition,
   CHAPTER_SIZES,
+  GATES,
   getLevel,
   overtimeSet,
   rushHourJam,
@@ -38,18 +39,28 @@ describe('chapter layout', () => {
     }
   });
 
-  it('keeps band mix near the design ratios', () => {
+  it('makes stretch the default texture and keeps breathers rare', () => {
     const counts: Record<string, number> = {};
     for (let i = 1; i <= TOTAL_LEVELS; i++) {
       const b = bandForLevel(i);
       counts[b] = (counts[b] ?? 0) + 1;
     }
-    // GDD §6 targets 25 / 50 / 20 / 5.
-    expect(counts[Band.Easy] / TOTAL_LEVELS).toBeGreaterThan(0.18);
-    expect(counts[Band.Easy] / TOTAL_LEVELS).toBeLessThan(0.35);
-    expect(counts[Band.Medium] / TOTAL_LEVELS).toBeGreaterThan(0.4);
-    expect(counts[Band.Hard] / TOTAL_LEVELS).toBeGreaterThan(0.12);
+    // Retuned from the GDD's 25/50/20/5. Stretch is now the norm rather than
+    // the peak, but breathers still exist — the goal gradient needs the rest,
+    // and a curve with no let-up reads as a wall rather than as difficulty.
+    expect(counts[Band.Hard] / TOTAL_LEVELS).toBeGreaterThan(0.4);
+    expect(counts[Band.Medium] / TOTAL_LEVELS).toBeGreaterThan(0.25);
+    expect(counts[Band.Easy] / TOTAL_LEVELS).toBeGreaterThan(0.07);
+    expect(counts[Band.Easy] / TOTAL_LEVELS).toBeLessThan(0.2);
     expect(counts[Band.Showcase] / TOTAL_LEVELS).toBeLessThan(0.09);
+  });
+
+  it('hands over from the on-ramp at level 10', () => {
+    // 1–3 teach the verb, 4–9 add vocabulary at a standard difficulty, and the
+    // hand-over level itself is a stretch jam: the step up should be felt.
+    for (let i = 1; i <= 3; i++) expect(bandForLevel(i), `L${i}`).toBe(Band.Easy);
+    for (let i = 4; i <= 9; i++) expect(bandForLevel(i), `L${i}`).toBe(Band.Medium);
+    expect(bandForLevel(10)).toBe(Band.Hard);
   });
 });
 
@@ -64,22 +75,34 @@ describe('modifier gating', () => {
         (spec.modifiers.roundabouts > 0 ? 1 : 0) +
         (spec.modifiers.gate ? 1 : 0) +
         (spec.modifiers.vips > 0 ? 1 : 0);
-      expect(load, `level ${i} modifier load`).toBeLessThanOrEqual(i < 75 ? 2 : 3);
+      expect(load, `level ${i} modifier load`).toBeLessThanOrEqual(i < 20 ? 2 : 3);
     }
   });
 
   it('holds every mechanic behind its unlock gate', () => {
+    // Read from GATES rather than repeated here: the gates are the schedule, and
+    // a copy of them in the test would only ever drift out of date.
     for (let i = 1; i <= TOTAL_LEVELS; i++) {
       const m = specForLevel(i).modifiers;
-      if (i < 14) expect(m.blockers, `L${i}`).toBe(0);
-      if (i < 16) expect(m.arrows, `L${i}`).toBe(0);
-      if (i < 26) expect(m.oil, `L${i}`).toBe(0);
-      if (i < 31) expect(m.vips, `L${i}`).toBe(0);
-      if (i < 37) expect(m.ambulances, `L${i}`).toBe(0);
-      if (i < 52) expect(m.roundabouts, `L${i}`).toBe(0);
-      if (i < 60) expect(m.gate, `L${i}`).toBe(false);
-      if (i < 8) expect(m.trunks, `L${i}`).toBe(0);
+      if (i < GATES.blockers) expect(m.blockers, `L${i}`).toBe(0);
+      if (i < GATES.oneWays) expect(m.arrows, `L${i}`).toBe(0);
+      if (i < GATES.oil) expect(m.oil, `L${i}`).toBe(0);
+      if (i < GATES.vips) expect(m.vips, `L${i}`).toBe(0);
+      if (i < GATES.ambulances) expect(m.ambulances, `L${i}`).toBe(0);
+      if (i < GATES.roundabouts) expect(m.roundabouts, `L${i}`).toBe(0);
+      if (i < GATES.gates) expect(m.gate, `L${i}`).toBe(false);
+      if (i < GATES.trunks) expect(m.trunks, `L${i}`).toBe(0);
     }
+  });
+
+  it('opens the whole puzzle vocabulary inside the first two districts', () => {
+    // A lot with no vocabulary in it can only be made harder by adding cars,
+    // which is tedium rather than difficulty — so the mechanics land early.
+    for (const gate of ['blockers', 'oneWays', 'oil', 'vips', 'ambulances', 'roundabouts', 'gates'] as const) {
+      expect(GATES[gate], gate).toBeLessThanOrEqual(18);
+    }
+    // The one mode with a real fail state still waits for mastery (GDD §4, §8).
+    expect(GATES.meteredLots).toBeGreaterThanOrEqual(45);
   });
 });
 
@@ -118,25 +141,50 @@ describe('every shipped jam', () => {
     }
   }, 180_000);
 
-  it('scales knot depth with the difficulty bands', () => {
-    const avg = (from: number, to: number) => {
+  it('steps the knot up hard at level 10 and never eases off again', () => {
+    const mean = (from: number, to: number, of: (i: number) => number) => {
       let sum = 0;
-      for (let i = from; i <= to; i++) sum += getLevel(i).knotDepth;
+      for (let i = from; i <= to; i++) sum += of(i);
       return sum / (to - from + 1);
     };
-    const beginner = avg(4, 20);
-    const intermediate = avg(21, 60);
-    const advanced = avg(61, 180);
-    expect(beginner).toBeLessThan(intermediate);
-    expect(intermediate).toBeLessThan(advanced);
-    expect(beginner).toBeGreaterThanOrEqual(2);
-    expect(advanced).toBeGreaterThanOrEqual(5.5);
-  }, 180_000);
+    const depth = (from: number, to: number) => mean(from, to, (i) => getLevel(i).knotDepth);
+    const cars = (from: number, to: number) => mean(from, to, (i) => getLevel(i).vehicles.length);
+
+    const ERAS: Array<[number, number]> = [
+      [10, 20],
+      [21, 40],
+      [41, 80],
+      [81, 160],
+      [161, 320],
+    ];
+
+    // The step at 10 is the whole point of this curve: a jump, not a nudge.
+    expect(depth(10, 20) - depth(4, 9)).toBeGreaterThan(2);
+
+    // Past the hand-over the knot never returns to on-ramp territory. This is
+    // asserted as a floor per era rather than as a monotone climb, because an
+    // era's mean depth also tracks how many breathers it contains — L10-20 has
+    // almost none, later chapters run two per district — and a strict climb
+    // would be measuring band mix, not difficulty.
+    for (const [from, to] of ERAS) {
+      expect(depth(from, to), `L${from}-${to} depth`).toBeGreaterThanOrEqual(6.5);
+    }
+    expect(depth(161, 320)).toBeGreaterThan(depth(10, 20));
+
+    // Density is the axis that does climb cleanly, era over era.
+    for (let i = 1; i < ERAS.length; i++) {
+      const prev = cars(...ERAS[i - 1]);
+      const here = cars(...ERAS[i]);
+      expect(here, `cars L${ERAS[i][0]}-${ERAS[i][1]} vs previous era`).toBeGreaterThan(prev);
+    }
+  }, 240_000);
 
   it('scales vehicle count into the design bands', () => {
     const count = (i: number) => getLevel(i).vehicles.length;
-    for (let i = 1; i <= 20; i++) expect(count(i), `L${i}`).toBeLessThanOrEqual(10);
-    for (let i = 61; i <= 180; i += 7) expect(count(i), `L${i}`).toBeGreaterThanOrEqual(10);
+    for (let i = 1; i <= 9; i++) expect(count(i), `L${i}`).toBeLessThanOrEqual(10);
+    // From the hand-over the lots are packed, not sparse.
+    for (let i = 10; i <= 20; i++) expect(count(i), `L${i}`).toBeGreaterThanOrEqual(10);
+    for (let i = 61; i <= 180; i += 7) expect(count(i), `L${i}`).toBeGreaterThanOrEqual(12);
     for (let i = 200; i <= 320; i += 13) expect(count(i), `L${i}`).toBeGreaterThanOrEqual(12);
   }, 180_000);
 

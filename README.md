@@ -45,6 +45,23 @@ Knot depth is *authored*, not hoped for. Each candidate placement is scored by t
 
 **`campaign.ts`** describes 320 launch jams rather than storing them. A global level index determines band, pattern, grid size, car count, knot depth, distractor ratio, street frontage and modifier load; JamForge turns that into the same lot on every device, every time. The whole sequence costs zero bundle bytes and every number in it is a tunable.
 
+### The curve: a ten-level on-ramp, then it bites
+
+Levels 1–3 teach the verb, 4–9 add vocabulary at a standard difficulty, and **level 10 is where the game stops being gentle** — a stretch jam on a 7×9 lot, fourteen cars, a knot nine deep. It is a step rather than a slope, and it is meant to be felt.
+
+| | L1–9 | L10–20 | L21–40 | L41–80 | L81–160 | L161–320 |
+|---|---|---|---|---|---|---|
+| Cars | 6.0 | 13.1 | 15.6 | 17.0 | 18.6 | 19.2 |
+| Knot depth | 3.6 | 7.3 | 7.2 | 7.4 | 7.8 | 8.2 |
+
+Every lever has to move together, and that is the part worth writing down. Knot depth past four links needs a chain that turns corners; a corner needs a crossing lane with its own curb cut; so the grid and the street frontage are the *ceiling* on depth, not decoration alongside it. Asking a 5×6 lot with two open edges for a knot of nine produces a lot of six, silently. The grid therefore jumps to 7×9 at level 10, standard jams front onto four streets rather than three, and the full puzzle vocabulary — blockers, one-ways, oil, VIPs, ambulances, roundabouts, gates — is open by level 18 instead of level 60. A lot with nothing in it but cars can only be made harder by adding more cars, and that is tedium rather than difficulty.
+
+Stretch is now the default texture of a chapter at 53% rather than its peak at 20%, but breathers survive at 18%. They are rest, not easy: a level-21 breather carries sixteen cars, more than any lot in the old game before level 100. A curve with no let-up in it reads as a wall.
+
+Depth is deliberately *not* asserted to climb monotonically era over era, because an era's mean depth also tracks how many breathers it happens to contain — L10–20 has almost none, later districts run two per district. Measured that way a climb would be measuring band mix. What is asserted is a floor per era, a strictly deeper late game, and density climbing cleanly.
+
+`npm run test` prints the delivered curve on every run (`tests/curve.report.test.ts`). That readout is not decoration: difficulty here is *requested* by the spec and *delivered* by the generator, and the two are not the same number.
+
 ### A finding worth writing down
 
 The obvious lever for difficulty — narrowing the street frontage — turned out to do the opposite of what it looks like. A car only ever leaves straight along its facing, so a curb cut on a given lane is what makes that lane usable at all. Open one edge and every car must face the same way: the lot is a shallow queue that holds few cars and knots barely three deep. Open four and lanes cross, dependency chains can turn corners, and the same grid packs denser *and* knots deeper.
@@ -97,7 +114,7 @@ The campaign is the game; the rest are appointments.
 | Mode | Where | What it is |
 |---|---|---|
 | Campaign | 320 jams, twelve districts | Unlimited slides, no fail state. |
-| Metered Lot | Sprinkled from L45 | The only fail state, and the only save-me. Capped slides, always with slack above par, never on a mechanic's first five outings and never on a skill-check. |
+| Metered Lot | Sprinkled from L45 | The only fail state, and the only save-me. Capped slides, always with slack above par, never on a mechanic's first five outings and never on a skill-check. Held at L45 deliberately while the puzzle vocabulary moved earlier — difficulty was worth front-loading, a fail state was not. |
 | Rush Hour | Daily | One authored hard jam, one attempt, the same for everyone. |
 | Cold Cases | From L70 | Every retired daily, replayable and untimed. |
 | Night Shift | Tuesdays | The same reads by headlight only. 1.5× Miles. |
@@ -120,7 +137,9 @@ Vehicle identity is never colour-only: class silhouettes differ, facing reads fr
 
 ## Testing
 
-`npm test` runs 124 unit tests: sim geometry and every modifier, solver optimality and dead-end detection, the full 320-level campaign audited for validity, solvability, par, band mix, gate compliance and difficulty scaling, plus the economy, medals, Metered-Lot gating and save layers.
+`npm test` runs 127 unit tests: sim geometry and every modifier, solver optimality and dead-end detection, the full 320-level campaign audited for validity, solvability, par, band mix, gate compliance and difficulty scaling, plus the economy, medals, Metered-Lot gating and save layers.
+
+The solvability audit is the one that makes the difficulty curve safe to move. Every one of the 320 lots is re-verified on each run to be clearable *and* clearable in exactly one slide per car — so packing them denser and knotting them deeper cannot quietly ship an unfair jam.
 
 `npm run smoke` is the one that catches what unit tests cannot. It boots the real game in Chromium at phone resolution, clears levels by dispatching genuine pointer events, drags a blocked car to check it bumps rather than escapes, undoes a slide, opens a hint, plays a Night Shift lot, runs a Metered Lot dry to check the save-me appears and that declining lands on a breather, plays a level with the keyboard alone, walks every meta screen, and fails on any console error, page exception, failed request, stacked modal or empty screen.
 

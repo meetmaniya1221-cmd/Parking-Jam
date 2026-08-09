@@ -6,7 +6,7 @@
  * The scripts in `scripts/` drive real pointer events and read this to assert.
  */
 
-import { meteredLimit, getLevel } from './core/campaign';
+import { meteredLimit, getLevel, PATTERNS } from './core/campaign';
 import { exitableVehicles, probe, resolveMove } from './core/sim';
 import { Dir } from './core/types';
 import { Settings } from './meta/save';
@@ -30,6 +30,14 @@ export interface GridlockDebug {
   wasteAMove(): boolean;
   /** Vehicles the Dispatcher Call is currently highlighting. */
   hintedVehicles(): number[];
+  /**
+   * The level that introduces a named pattern, or null.
+   *
+   * Exposed so a harness never has to restate the schedule: a test that hard
+   * codes "level 26 teaches the Slick Corridor" goes quietly wrong the moment
+   * the curve is retuned, and reports it as a missing coach mark.
+   */
+  patternIntro(tag: string): number | null;
   version: string;
 }
 
@@ -68,6 +76,9 @@ const handle: GridlockDebug = {
   },
   hintedVehicles(): number[] {
     return handle.lotView ? handle.lotView.hintedVehicles() : [];
+  },
+  patternIntro(tag: string): number | null {
+    return PATTERNS.find((p) => p.tag === tag)?.intro ?? null;
   },
   wasteAMove(): boolean {
     const view = handle.lotView;

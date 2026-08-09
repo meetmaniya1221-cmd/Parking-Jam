@@ -63,35 +63,52 @@ export function levelsInDistrict(district: number): number {
  * ------------------------------------------------------------------ */
 
 /**
- * A 20-slot chapter template: two standard jams → one stretch → one breather,
- * peaking at 80% with the chapter boss and closing breather-then-showcase so
- * the district timelapse lands on a high. Ratios match GDD §6: 25/50/20/5.
+ * The on-ramp ends at level 10.
+ *
+ * Levels 1–3 teach the verb, 4–9 add vocabulary at a standard difficulty, and
+ * from 10 the chapter tide takes over at full strength. It is a deliberately
+ * short runway: the curve is tuned for a player who wants to be thinking hard
+ * almost immediately, not one who wants a fortnight of tutorial.
+ */
+const RAMP_ENDS = 10;
+
+/**
+ * A 20-slot chapter template, weighted to stretch jams: the rhythm of
+ * breather → standard → stretch is kept because the goal gradient needs it,
+ * but stretch is now the *default* texture of a chapter rather than its peak.
+ * Breathers still exist — they are rest, not easy.
  */
 const BAND_TEMPLATE: readonly Band[] = [
-  Band.Easy,
+  // Slot 0 is never reached at pos 0 — a chapter opener is forced to a breather
+  // above. It is reached at pos 1 of any chapter longer than twenty, so leaving
+  // it a breather gave those districts two rest levels back to back.
   Band.Medium,
   Band.Medium,
   Band.Hard,
-  Band.Easy,
-  Band.Medium,
-  Band.Medium,
   Band.Hard,
   Band.Medium,
   Band.Easy,
-  Band.Medium,
-  Band.Medium,
   Band.Hard,
-  Band.Easy,
-  Band.Medium,
-  Band.Medium,
   Band.Hard,
   Band.Medium,
+  // Slot 9 is level 10 in the opening chapter, the level the ramp hands over
+  // on. It is a stretch jam on purpose: the step up should be felt, not eased.
+  Band.Hard,
+  Band.Hard,
+  Band.Medium,
+  Band.Hard,
+  Band.Hard,
   Band.Easy,
+  Band.Hard,
+  Band.Medium,
+  Band.Hard,
+  Band.Medium,
   Band.Showcase,
 ];
 
 export function bandForLevel(index: number): Band {
   if (index <= 3) return Band.Easy;
+  if (index < RAMP_ENDS) return Band.Medium;
   const { pos, size } = chapterPosition(index);
   if (pos === size - 1) return Band.Showcase;
   if (pos === 0) return Band.Easy;
@@ -114,19 +131,24 @@ export interface PatternDef {
   blurb: string;
 }
 
+/**
+ * The whole vocabulary is taught inside the first two districts. A pattern
+ * cannot appear before the mechanic it reads on has opened, so these intros sit
+ * at or after their gate below.
+ */
 export const PATTERNS: readonly PatternDef[] = [
   { tag: 'zipper', label: 'Zipper', intro: 4, blurb: 'Interleaved rows — find which end unzips.' },
-  { tag: 'plug', label: 'Plug', intro: 7, blurb: 'One car corks the only lane out.' },
-  { tag: 'freightWall', label: 'Freight Wall', intro: 9, blurb: 'A box truck is the wall. Move the wall.' },
-  { tag: 'comb', label: 'Comb', intro: 11, blurb: 'Parallel teeth, one crossing blocker.' },
-  { tag: 'onion', label: 'Onion', intro: 17, blurb: 'Solve outside-in, exit inside-out.' },
-  { tag: 'decoy', label: 'Decoy', intro: 23, blurb: 'The obvious car is a trap.' },
-  { tag: 'slickCorridor', label: 'Slick Corridor', intro: 26, blurb: 'Oil sends you to the wall.' },
-  { tag: 'dominoRun', label: 'Domino Run', intro: 27, blurb: 'Every exit frees exactly one more.' },
-  { tag: 'velvetRope', label: 'Velvet Rope', intro: 31, blurb: 'The VIP leaves first, or nobody does.' },
-  { tag: 'twoDoor', label: 'Two-Door', intro: 38, blurb: 'Two streets, two competing flows.' },
-  { tag: 'carousel', label: 'Carousel', intro: 52, blurb: 'Roundabouts turn a hopeless facing.' },
-  { tag: 'borderCrossing', label: 'Border Crossing', intro: 60, blurb: 'The read spans two rooms.' },
+  { tag: 'plug', label: 'Plug', intro: 5, blurb: 'One car corks the only lane out.' },
+  { tag: 'freightWall', label: 'Freight Wall', intro: 7, blurb: 'A box truck is the wall. Move the wall.' },
+  { tag: 'comb', label: 'Comb', intro: 9, blurb: 'Parallel teeth, one crossing blocker.' },
+  { tag: 'onion', label: 'Onion', intro: 11, blurb: 'Solve outside-in, exit inside-out.' },
+  { tag: 'slickCorridor', label: 'Slick Corridor', intro: 12, blurb: 'Oil sends you to the wall.' },
+  { tag: 'decoy', label: 'Decoy', intro: 13, blurb: 'The obvious car is a trap.' },
+  { tag: 'velvetRope', label: 'Velvet Rope', intro: 15, blurb: 'The VIP leaves first, or nobody does.' },
+  { tag: 'dominoRun', label: 'Domino Run', intro: 17, blurb: 'Every exit frees exactly one more.' },
+  { tag: 'twoDoor', label: 'Two-Door', intro: 19, blurb: 'Two streets, two competing flows.' },
+  { tag: 'carousel', label: 'Carousel', intro: 21, blurb: 'Roundabouts turn a hopeless facing.' },
+  { tag: 'borderCrossing', label: 'Border Crossing', intro: 23, blurb: 'The read spans two rooms.' },
 ];
 
 const PATTERN_INTRO_LEVELS = new Set(PATTERNS.map((p) => p.intro));
@@ -153,26 +175,39 @@ function patternForLevel(index: number): PatternDef {
  * Mechanic unlock gates (GDD §4 "Unlock Schedule")
  * ------------------------------------------------------------------ */
 
+/**
+ * Two kinds of gate live here, and they move independently.
+ *
+ * **Mechanic** gates decide what a lot may contain, so they set how hard the
+ * game is allowed to be. They are front-loaded: the full puzzle vocabulary is
+ * open by level 18, because a lot with nothing in it but cars can only be made
+ * harder by piling on more cars, and that is tedium rather than difficulty.
+ *
+ * **Meta** gates decide when a screen or a mode appears, and they are paced for
+ * a player learning an app, not a puzzle. They stay where they were — in
+ * particular Metered Lots, the one mode with a real fail state, is still held
+ * back until the player has mastered the unlimited one.
+ */
 export const GATES = {
   cityMap: 5,
-  trunks: 8,
+  blockers: 6,
+  trunks: 6,
+  oneWays: 8,
   garage: 10,
+  oil: 10,
+  trailers: 10,
+  vips: 12,
   interstitials: 12,
-  blockers: 14,
+  ambulances: 14,
   cleanRun: 14,
   dispatchBoard: 15,
-  oneWays: 16,
+  roundabouts: 16,
+  gates: 18,
   rushHour: 20,
-  trailers: 21,
   cityPass: 25,
-  oil: 26,
   ambulanceRun: 28,
-  vips: 31,
   hornLibrary: 34,
-  ambulances: 37,
   meteredLots: 45,
-  roundabouts: 52,
-  gates: 60,
   goldPlates: 70,
   overtime: 80,
 } as const;
@@ -196,37 +231,44 @@ interface Dimensions {
   h: number;
 }
 
+/**
+ * The lot has to be big enough to hold the knot being asked of it.
+ *
+ * Depth past four links needs a chain that turns corners, and a corner needs a
+ * crossing lane with its own curb cut — so grid size is not decoration, it is
+ * the ceiling on every other difficulty lever. It grows fast to clear the way
+ * for the level-10 step up, then settles: past 7×10 the cells get too small to
+ * touch comfortably on a phone.
+ */
 function gridForLevel(index: number, band: Band): Dimensions {
   let w: number;
   let h: number;
-  if (index <= 10) [w, h] = [5, 6];
-  else if (index <= 20) [w, h] = [5, 7];
-  else if (index <= 40) [w, h] = [6, 7];
-  else if (index <= 60) [w, h] = [6, 8];
-  else if (index <= 100) [w, h] = [7, 9];
+  if (index <= 4) [w, h] = [5, 6];
+  else if (index < RAMP_ENDS) [w, h] = [6, 7];
+  else if (index <= 24) [w, h] = [7, 9];
   else [w, h] = [7, 10];
 
   if (band === Band.Showcase) {
     w = Math.min(8, w + 1);
     h = Math.min(10, h + 1);
-  } else if (band === Band.Easy && index > 20) {
+  } else if (band === Band.Easy && index >= RAMP_ENDS) {
     // Breathers are wide and shallow: many exits, little thinking (GDD §6).
-    h = Math.max(5, h - 1);
+    h = Math.max(6, h - 1);
   }
   return { w, h };
 }
 
 function vehicleCountFor(index: number, band: Band, dims: Dimensions): number {
   let base: number;
-  if (index <= 20) base = lerp(4, 6, (index - 1) / 19);
-  else if (index <= 60) base = lerp(7, 13, (index - 20) / 40);
-  else if (index <= 180) base = lerp(13, 19, (index - 60) / 120);
-  else base = lerp(19, 22, (index - 180) / 140);
+  if (index < RAMP_ENDS) base = lerp(4, 8, (index - 1) / (RAMP_ENDS - 2));
+  else if (index <= 30) base = lerp(12, 15, (index - RAMP_ENDS) / 20);
+  else if (index <= 120) base = lerp(15, 19, (index - 30) / 90);
+  else base = lerp(19, 22, (index - 120) / 200);
 
   const bandAdjust =
     band === Band.Easy ? -1 : band === Band.Hard ? 2 : band === Band.Showcase ? 3 : 0;
   // Breathers carry MORE cars but a shallower knot — pure goal-gradient candy.
-  const breatherBonus = band === Band.Easy && index > 20 ? 3 : 0;
+  const breatherBonus = band === Band.Easy && index >= RAMP_ENDS ? 3 : 0;
 
   const capacity = Math.floor((dims.w * dims.h) / 3.2);
   return Math.max(3, Math.min(capacity, Math.round(base) + bandAdjust + breatherBonus));
@@ -246,10 +288,10 @@ function knotDepthFor(index: number, band: Band, vehicles: number): number {
   // turn corners to grow past four links, and each turn needs a curb cut on the
   // crossing lane. Measured ceiling is ~10, comfortable band 5–8.
   let base: number;
-  if (index <= 20) base = lerp(2, 3, (index - 1) / 19);
-  else if (index <= 60) base = lerp(3.5, 5, (index - 20) / 40);
-  else if (index <= 180) base = lerp(5, 7, (index - 60) / 120);
-  else base = lerp(7, 8, (index - 180) / 140);
+  if (index < RAMP_ENDS) base = lerp(2, 4.5, (index - 1) / (RAMP_ENDS - 2));
+  else if (index <= 30) base = lerp(6, 7, (index - RAMP_ENDS) / 20);
+  else if (index <= 120) base = lerp(7, 8, (index - 30) / 90);
+  else base = lerp(8, 9, (index - 120) / 200);
 
   const bandAdjust =
     band === Band.Easy ? -1.5 : band === Band.Hard ? 1 : band === Band.Showcase ? 1.5 : 0;
@@ -257,14 +299,15 @@ function knotDepthFor(index: number, band: Band, vehicles: number): number {
 }
 
 function distractorRatioFor(index: number, band: Band): number {
-  const base = index <= 20 ? 0.2 : Math.min(0.55, lerp(0.25, 0.55, (index - 20) / 160));
-  return band === Band.Easy ? Math.min(0.6, base + 0.1) : base;
+  const base =
+    index < RAMP_ENDS ? 0.2 : Math.min(0.6, lerp(0.42, 0.6, (index - RAMP_ENDS) / 110));
+  return band === Band.Easy ? Math.min(0.65, base + 0.1) : base;
 }
 
 function lengthMixFor(index: number): Record<number, number> {
-  if (index < 9) return { 2: 1 };
+  if (index < 5) return { 2: 1 };
   if (index < GATES.trailers) return { 2: 6, 3: 2 };
-  if (index < 80) return { 2: 6, 3: 3, 4: 1 };
+  if (index <= 24) return { 2: 6, 3: 3, 4: 1 };
   return { 2: 5, 3: 3, 4: 2 };
 }
 
@@ -287,26 +330,32 @@ interface Street {
 function streetFor(index: number, band: Band, pattern: string): Street {
   if (pattern === 'plug') return { sides: 2, width: 0.5 };
   if (pattern === 'twoDoor') return { sides: 2, width: 0.6 };
-  if (index <= 6) return { sides: 1, width: 1 };
-  if (index <= 12) return { sides: 2, width: 0.9 };
-  if (index <= 20) return { sides: 2, width: 1 };
+  if (index <= 4) return { sides: 1, width: 1 };
+  if (index < RAMP_ENDS) return { sides: 2, width: 1 };
   if (band === Band.Easy) return { sides: 3, width: 1 };
   if (band === Band.Hard) return { sides: 4, width: 0.8 };
   if (band === Band.Showcase) return { sides: 4, width: 0.9 };
-  return { sides: 3, width: 0.8 };
+  // Standard jams now front onto four streets too. Crossing lanes are what let
+  // a dependency chain turn a corner, and past level 10 every lot needs that.
+  return { sides: 4, width: 0.85 };
 }
 
 /**
- * Modifier load is capped at 2 families until L75 and 3 after (GDD §4), and a
- * brand-new mechanic never shares a lot with another for its first 5 outings.
+ * Modifier load is capped at 2 families early and 3 once the vocabulary is
+ * open (GDD §4), and a brand-new mechanic never shares a lot with another
+ * while it is still being taught.
+ *
+ * That teaching window is three levels rather than five. It is the one guard
+ * rail the compressed curve genuinely trades against — a mechanic still gets a
+ * clean lot to be introduced on, just not a long one.
  */
 function modifiersFor(index: number, band: Band, pattern: string, dims: Dimensions): ModifierSpec {
   const cells = dims.w * dims.h;
   const m: ModifierSpec = { ...NO_MODIFIERS };
-  const cap = index < 75 ? 2 : 3;
+  const cap = index < 20 ? 2 : 3;
 
   const intro = patternIntroducedAt(index);
-  const isFreshMechanic = (gate: number) => index >= gate && index < gate + 5;
+  const isFreshMechanic = (gate: number) => index >= gate && index < gate + 3;
   const soloMechanic = intro !== null || isFreshMechanic(GATES.oil) || isFreshMechanic(GATES.vips);
 
   const families: Array<() => void> = [];

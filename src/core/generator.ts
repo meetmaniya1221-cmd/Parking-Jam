@@ -585,9 +585,20 @@ function opennessFit(open: number, band: Band, vehicles: number): number {
 }
 
 /** Harder bands get more shots at the dice — a deep knot is a rarer roll. */
+/**
+ * How many lots to build before keeping the best one.
+ *
+ * The knot a lot can hold is capped by its geometry, and a run that packs cells
+ * with blockers and distractors leaves JamForge fewer valid insertions to chain
+ * through — so a demanding spec needs more tries to find a build that actually
+ * reaches its target depth, not just a build that is legal. Stretch and
+ * showcase jams get the largest budget because they are the ones asking for
+ * depth the board can only just deliver.
+ */
 function attemptsFor(spec: LevelSpec): number {
-  if (spec.band === Band.Showcase) return 64;
-  if (spec.band === Band.Hard) return 48;
+  if (spec.band === Band.Showcase) return 96;
+  if (spec.band === Band.Hard) return 80;
+  if (spec.band === Band.Medium) return 48;
   return 28;
 }
 

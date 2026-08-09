@@ -4,6 +4,7 @@ import {
   GAUNTLET_CHECKPOINTS,
   GAUNTLET_LENGTH,
   gauntletJam,
+  GATES,
   meteredLimit,
   patternIntroducedAt,
   TOTAL_LEVELS,
@@ -453,7 +454,12 @@ describe('metered lots', () => {
   });
 
   it('gives every mechanic five unconstrained outings first', () => {
-    for (const gate of [26, 31, 37, 52, 60]) {
+    // Read the gates rather than restating them. With the vocabulary
+    // front-loaded, every mechanic now opens more than twenty levels before
+    // Metered Lots exist at all, so this holds structurally — but the guarantee
+    // is the one that matters, not the arithmetic that currently satisfies it,
+    // and this fails loudly if a gate is ever moved into the metered range.
+    for (const gate of [GATES.oil, GATES.vips, GATES.ambulances, GATES.roundabouts, GATES.gates]) {
       for (let i = gate; i < gate + 5; i++) {
         expect(meteredLimit(i, 8), `L${i} is within five of gate ${gate}`).toBeNull();
       }

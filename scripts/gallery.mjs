@@ -51,7 +51,7 @@ const shot = async (name) => {
 };
 
 // A spread across the campaign: every mechanic gets an outing.
-for (const level of [1, 18, 30, 45, 66, 96, 140, 210, 300]) {
+for (const level of [9, 10, 14, 18, 24, 60, 120, 300]) {
   await page.evaluate((n) => window.__gridlock.jumpTo(n), level);
   await page.waitForTimeout(650);
   await shot(`lot-${String(level).padStart(3, '0')}`);
