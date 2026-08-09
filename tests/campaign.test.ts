@@ -117,9 +117,13 @@ describe('every shipped jam', () => {
       if (issues.length) failures.push(`L${i}: ${issues.map((x) => x.code).join(',')}`);
       const audit = auditLevel(level);
       if (!audit.solvable) failures.push(`L${i}: unsolvable`);
-      if (audit.parSlides !== level.vehicles.length) {
-        failures.push(`L${i}: par ${audit.parSlides} != ${level.vehicles.length}`);
+      // Every car costs one slide to drive off, plus one for each temporary
+      // reposition the lot forces. Late lots are built to force exactly one.
+      const expected = level.vehicles.length + audit.repositions;
+      if (audit.parSlides !== expected) {
+        failures.push(`L${i}: par ${audit.parSlides} != ${expected}`);
       }
+      if (audit.repositions > 2) failures.push(`L${i}: ${audit.repositions} repositions`);
     }
     expect(failures).toEqual([]);
   }, 180_000);
@@ -171,27 +175,37 @@ describe('every shipped jam', () => {
     }
     expect(depth(161, 320)).toBeGreaterThan(depth(10, 20));
 
-    // Density is the axis that does climb cleanly, era over era.
-    for (let i = 1; i < ERAS.length; i++) {
-      const prev = cars(...ERAS[i - 1]);
-      const here = cars(...ERAS[i]);
-      expect(here, `cars L${ERAS[i][0]}-${ERAS[i][1]} vs previous era`).toBeGreaterThan(prev);
+    // Car count climbs hard across the growth phase and then holds. The board
+    // stops growing at level 22 by design — past 12×15 the cells get too small
+    // to touch on a phone — so density plateaus with it, and difficulty carries
+    // on climbing through depth and bottlenecks instead. Asserting a strict
+    // era-over-era climb here would be asserting the lot keeps growing forever.
+    expect(cars(1, 9)).toBeLessThan(cars(10, 20));
+    expect(cars(10, 20)).toBeLessThan(cars(21, 40));
+    for (const [from, to] of ERAS) {
+      expect(cars(from, to), `cars L${from}-${to}`).toBeGreaterThanOrEqual(cars(10, 20));
     }
   }, 240_000);
 
   it('scales vehicle count into the design bands', () => {
     const count = (i: number) => getLevel(i).vehicles.length;
-    for (let i = 1; i <= 9; i++) expect(count(i), `L${i}`).toBeLessThanOrEqual(10);
-    // From the hand-over the lots are packed, not sparse.
-    for (let i = 10; i <= 20; i++) expect(count(i), `L${i}`).toBeGreaterThanOrEqual(10);
-    for (let i = 61; i <= 180; i += 7) expect(count(i), `L${i}`).toBeGreaterThanOrEqual(12);
-    for (let i = 200; i <= 320; i += 13) expect(count(i), `L${i}`).toBeGreaterThanOrEqual(12);
+    // The on-ramp is the one stretch where the lot is small enough to read at a
+    // glance; from the hand-over the lots are packed, and by the twenties they
+    // are parking structures.
+    for (let i = 1; i <= 3; i++) expect(count(i), `L${i}`).toBeLessThanOrEqual(7);
+    for (let i = 4; i <= 6; i++) expect(count(i), `L${i}`).toBeLessThanOrEqual(11);
+    for (let i = 7; i <= 9; i++) expect(count(i), `L${i}`).toBeGreaterThanOrEqual(9);
+    for (let i = 10; i <= 12; i++) expect(count(i), `L${i}`).toBeGreaterThanOrEqual(14);
+    for (let i = 13; i <= 15; i++) expect(count(i), `L${i}`).toBeGreaterThanOrEqual(18);
+    for (let i = 16; i <= 20; i++) expect(count(i), `L${i}`).toBeGreaterThanOrEqual(24);
+    for (let i = 61; i <= 180; i += 7) expect(count(i), `L${i}`).toBeGreaterThanOrEqual(22);
+    for (let i = 200; i <= 320; i += 13) expect(count(i), `L${i}`).toBeGreaterThanOrEqual(22);
   }, 180_000);
 
   it('keeps the tutorial gentle and free of vocabulary', () => {
     for (let i = 1; i <= 3; i++) {
       const level = getLevel(i);
-      expect(level.vehicles.length).toBeLessThanOrEqual(6);
+      expect(level.vehicles.length).toBeLessThanOrEqual(7);
       expect(level.modifierLoad).toBe(0);
       expect(level.vehicles.every((v) => v.tags === 0)).toBe(true);
     }

@@ -10,6 +10,7 @@ npm run dev        # play it at http://127.0.0.1:5173
 npm run verify     # typecheck + unit tests + production build
 npm run smoke      # drive the real game in Chromium and screenshot it
 npm run gallery    # screenshot a spread of lots, modifiers and a11y modes
+npm run progression # watch the lot grow, level 1 to 24, on three screen sizes
 ```
 
 ## The game in one paragraph
@@ -34,33 +35,69 @@ The sim is the interesting constraint: because `sim.ts` is a pure function of `(
 
 **`solver.ts`** answers "can this still be cleared" two ways:
 
-1. **Exit-only search.** If no car ever needs repositioning, occupancy is a pure function of *who is left*, so the search memoises on a bitmask and finishes in microseconds. When it succeeds the answer is provably optimal — clearing *n* cars needs at least *n* slides, and this clears them in exactly *n*.
-2. **Bounded best-first search** over full slide and pivot moves, for the lots that genuinely need a car pulled out of the way.
+1. **Exit closure.** A car only ever leaves along its own facing, so removing one can never block another: "who can leave right now" only ever grows as the lot empties. Exit-only play is therefore *confluent* — drive off whoever can go, repeatedly, and you reach the same terminal lot whatever order you pick. That makes both success and failure linear-time, and it is the single observation that makes forty-car lots tractable at all. When it clears the lot the answer is provably optimal: clearing *n* cars needs at least *n* slides, and this clears them in exactly *n*.
+2. **Reposition search** for lots that genuinely need a car pulled temporarily aside. Because exits are never harmful, taking every available exit before considering a slide loses no solutions, so the search only branches on slides from an already-stuck lot — and iterative deepening on the number of repositions returns a line with the fewest the lot can be beaten with.
 
-It also measures difficulty. Knot depth is the longest chain in the *precedence DAG*: a car only leaves along its facing, so every car standing on that ray must go first — an absolute ordering, independent of which valid solution the player picks.
+It also measures difficulty, and not only as depth. Knot depth is the longest chain in the *precedence DAG*: a car only leaves along its facing, so every car standing on that ray must go first — an absolute ordering, independent of which valid solution the player picks. Alongside it: **bottlenecks** (cars that three or more others transitively wait on), **independent ratio** (cars that neither block nor are blocked — free parking), **density**, and **repositions**.
 
 **`generator.ts` (JamForge)** builds lots **backwards**. Vehicles are inserted one at a time, and an insertion is only accepted if that car could drive straight off the lot given everything already placed. Replaying the insertions in reverse is therefore always a valid solution, which makes every generated jam solvable by construction — the promise the design document makes to the player, kept structurally rather than by testing after the fact.
 
-Knot depth is *authored*, not hoped for. Each candidate placement is scored by the chain depth it would actually create, computed from a per-car "how deep is the knot above this car" pass. Chasing a single chain tail stalls at three or four links, because each link starts closer to the street than the one it blocks; scoring every placement by its real contribution does not.
+Nothing about the lot is hoped for. Every insertion carries an explicit *intent*, chosen from where the partial lot currently stands against its contract: anchor the knot, deepen it, cork a lane that is standing open, leave a car free to move, or park a red herring. Knot depth in particular is scored by the chain each placement would actually create, computed from a per-car "how deep is the knot above this car" pass — chasing a single chain tail stalls at three or four links, because each link starts closer to the street than the one it blocks.
 
-**`campaign.ts`** describes 320 launch jams rather than storing them. A global level index determines band, pattern, grid size, car count, knot depth, distractor ratio, street frontage and modifier load; JamForge turns that into the same lot on every device, every time. The whole sequence costs zero bundle bytes and every number in it is a tunable.
+**`difficulty.ts`** is the curve, in one table. A level index and band become a `DifficultyConfig`: board width and height, car target and floor, minimum dependency depth, minimum solution moves, how many cars may drive off on turn one, how many bottlenecks it must have, how much free parking it may contain, how dense it must be, and whether it must require a temporary reposition. It is a *contract* — the generator builds toward it and the solver grades the result against it — and every number in it is a tunable.
 
-### The curve: a ten-level on-ramp, then it bites
+**`campaign.ts`** describes 320 launch jams rather than storing them. A global level index determines band, pattern, street frontage and modifier load, and pulls the rest from the curve; JamForge turns that into the same lot on every device, every time. The whole sequence costs zero bundle bytes.
 
-Levels 1–3 teach the verb, 4–9 add vocabulary at a standard difficulty, and **level 10 is where the game stops being gentle** — a stretch jam on a 7×9 lot, fourteen cars, a knot nine deep. It is a step rather than a slope, and it is meant to be felt.
+### The curve: the lot itself grows
+
+The board is not a constant. Difficulty on a fixed grid runs out of room — a dependency chain can only be as long as the lanes it runs down, and a bottleneck only reads as one when there is enough lot around it to be bottled — so the *parking structure* is what scales, and everything else scales with it.
+
+| Level | Grid | Cells | Cars | Depth | Density | Cell on a phone |
+|---|---|---|---|---|---|---|
+| 1 | 6×8 | 48 | 5 | 3 | 0.21 | 63 px |
+| 5 | 7×9 | 63 | 8 | 4 | 0.27 | 54 px |
+| 10 | 9×11 | 99 | 17 | 10 | 0.36 | 42 px |
+| 15 | 11×13 | 143 | 26 | 8 | 0.48 | 34 px |
+| 20 | 13×16 | 208 | 32 | 11 | 0.53 | 29 px |
+| 320 | 13×16 | 208 | 37 | 17 | 0.57 | 29 px |
+
+The last column is the point of the whole exercise. The lot on screen stays roughly the same size — around 375 px on a 412 px phone — while the number of cells inside it triples, so a car takes up about a twentieth of the board at level one and under a hundredth by level twenty. The player is not looking at a bigger picture of the same puzzle; they are looking at a car park.
 
 | | L1–9 | L10–20 | L21–40 | L41–80 | L81–160 | L161–320 |
 |---|---|---|---|---|---|---|
-| Cars | 6.0 | 13.1 | 15.6 | 17.0 | 18.6 | 19.2 |
-| Knot depth | 3.6 | 7.3 | 7.2 | 7.4 | 7.8 | 8.2 |
+| Cars | 8.7 | 24.1 | 31.5 | 31.6 | 31.5 | 31.6 |
+| Knot depth | 4.9 | 10.2 | 13.0 | 13.1 | 12.5 | 13.4 |
 
-Every lever has to move together, and that is the part worth writing down. Knot depth past four links needs a chain that turns corners; a corner needs a crossing lane with its own curb cut; so the grid and the street frontage are the *ceiling* on depth, not decoration alongside it. Asking a 5×6 lot with two open edges for a knot of nine produces a lot of six, silently. The grid therefore jumps to 7×9 at level 10, standard jams front onto four streets rather than three, and the full puzzle vocabulary — blockers, one-ways, oil, VIPs, ambulances, roundabouts, gates — is open by level 18 instead of level 60. A lot with nothing in it but cars can only be made harder by adding more cars, and that is tedium rather than difficulty.
+Growth is front-loaded into the first twenty levels and then stops: past 12×15 a cell on a phone falls below what a thumb can reliably pick out of a packed lot, and difficulty bought by making the game harder to *see* is the one kind worth refusing. From there the curve carries on through depth, bottlenecks, vocabulary and the forced reposition, which have no such ceiling.
 
-Stretch is now the default texture of a chapter at 53% rather than its peak at 20%, but breathers survive at 18%. They are rest, not easy: a level-21 breather carries sixteen cars, more than any lot in the old game before level 100. A curve with no let-up in it reads as a wall.
+Every lever still has to move together. Knot depth past four links needs a chain that turns corners; a corner needs a crossing lane with its own curb cut; so the grid and the street frontage remain the *ceiling* on depth, not decoration alongside it. A pinched frontage gets its depth target scaled down to what its geometry can actually hold, rather than failing every candidate and silently shipping a near-miss.
 
-Depth is deliberately *not* asserted to climb monotonically era over era, because an era's mean depth also tracks how many breathers it happens to contain — L10–20 has almost none, later districts run two per district. Measured that way a climb would be measuring band mix. What is asserted is a floor per era, a strictly deeper late game, and density climbing cleanly.
+Stretch is the default texture of a chapter at 53% rather than its peak at 20%, and breathers survive at 14%. They are rest, not easy: a level-21 breather carries thirty-two cars on a 12×15 lot — it just opens with fourteen of them free to move, where a stretch jam of the same size opens with two.
 
-`npm run test` prints the delivered curve on every run (`tests/curve.report.test.ts`). That readout is not decoration: difficulty here is *requested* by the spec and *delivered* by the generator, and the two are not the same number.
+`npm run test` prints the delivered curve on every run (`tests/curve.report.test.ts`), including which parts of its contract each level missed. That readout is not decoration: difficulty here is *requested* by the config and *delivered* by the generator, and the two are not the same number.
+
+### Solver validation: the curve has teeth
+
+A generated lot is not shipped because it was generated. Every candidate is solved, measured and graded against its own `DifficultyConfig`; if it misses on cars, depth, solution length, opening moves, bottlenecks, free parking or density, it is thrown away and another is rolled. Only when no candidate in the budget clears the contract does the closest near-miss ship — because an unbuildable level is worse than a slightly easy one, and the readout says which levels those are.
+
+That is what stops a level-fifteen lot from being a level-five lot on a big board. `tests/progression.test.ts` asserts the mechanism directly: grade a real level-five lot against level fifteen's contract and it must fail on cars, depth, moves *and* bottlenecks.
+
+### The pinwheel: forcing a temporary move
+
+Up to level thirteen every jam clears by driving cars off in the right order, so the read is "find the order". Past it, the harder bands demand a lot that cannot be solved that way — the player has to pull a car temporarily aside and put it back in play, which is a different kind of thinking.
+
+In this movement model there is exactly one shape that forces it. Cars travel in straight lines along a fixed facing, so a knot with no *cycle* in it always unties by exits alone; the deadlock has to be a ring:
+
+```
+A A . .     A faces east into B
+. . . B     B faces south into C
+D . . B     C faces west into D
+D . C C     D faces north into A
+```
+
+Nobody in the ring can leave and no exit will ever help. It is opened by reversing one car a full body length out of the lane it is standing across, after which the ring unwinds.
+
+The ring is placed into the **empty** lot before anything else, which is what makes the escape provable rather than hoped for: JamForge builds backwards, so the four ring cars are the last things left on the lot, alone, with the reverse lane and all four exit lanes they were checked for still clear. Any of the four can be the car that backs out — the ring is symmetric under rotation — and the cells the escape depends on are reserved so no cone or oil slick can land in them. If no position in the lot satisfies all of that, the injection is simply skipped and the level ships without it.
 
 ### A finding worth writing down
 
@@ -74,16 +111,20 @@ Measured across 120 generated lots on a 7×10 grid:
 | 3 × 0.60 | 16 | 5 | 8 |
 | 4 × 0.90 | 16 | 7 | 10 |
 
-So difficulty lives in density, distractors and vocabulary, and frontage width became a *simplicity* lever — reserved for the opening levels and for the deliberately constrained Plug pattern.
+So difficulty lives in density, distractors and vocabulary. Frontage *width* became the band lever — every lot past the on-ramp fronts onto four streets, and how much of each edge is curb cut is what decides how many cars can drive off on turn one.
 
-The related trap: how open a lot feels on move one has to be scored as a *share* of the cars, not a count. Four free cars out of eight and four out of twenty are nothing alike, and an absolute threshold quietly mis-graded every large lot — including the daily Rush Hour, which was generating at knot depth 3 while advertising itself as the hardest jam of the day. Measured as a share, the bands come out clean:
+That finding also set a limit on the growth curve. The Plug and the Two-Door are frontage reads — one lane out, or two flows competing for it — and on a small lot that is the whole puzzle. On a 12×15 one it stops being a read and becomes an amputation: two facings unusable, half the lot wasted, and a knot that cannot chain past its longest queue. Past the on-ramp they keep their pinch but not their blindfold.
+
+The related trap: how open a lot feels on move one has to be scored as a *share* of the cars, not a count. Four free cars out of eight and four out of thirty-two are nothing alike, and an absolute threshold quietly mis-graded every large lot. Measured as a share, the bands come out clean:
 
 | Band | Median bump likelihood |
 |---|---|
-| Breather | 0.33 |
-| Standard | 0.50 |
-| Stretch | 0.60 |
-| Showcase | 0.57 |
+| Breather | 0.57 |
+| Standard | 0.90 |
+| Stretch | 0.93 |
+| Showcase | 0.95 |
+
+The same trap bit the Velvet Rope. While a VIP is on the lot nobody else may leave, so the number of VIPs *is* the number of legal opening moves — one VIP on a thirty-car lot is not a read, it is hunting a single legal move among thirty. VIP count now scales with the lot, tightens on the stretch bands, and never appears on a breather at all.
 
 ### `src/view` — the lot you can touch
 
@@ -95,9 +136,19 @@ Extrusion height is deliberately low, and the stack shares one budget with the b
 
 The asphalt is not a flat fill: aggregate grain, old spills and tyre scuff are generated once into a repeating tile, and the slab carries bay paint, an occlusion ring at the kerb line and a vignette that lands the eye centre-lot. The lot sits inside a raised concrete lip, which is what seats it in the street instead of floating on it.
 
-Two caches keep that affordable. The ground is baked to an offscreen canvas and blitted. And a vehicle that is not mid-bump draws the identical picture every frame, so it is rendered once into its own small canvas and blitted thereafter — a still frame costs one ground image plus one image per car. Anything mid-bump falls back to painting live, which is at most a car or two at a time; both paths call the same paint function, so there is exactly one description of what a car looks like. Nothing uses `shadowBlur` — every soft edge here is cheaper as a stack of shapes.
+Two caches keep that affordable. The ground is baked to an offscreen canvas and blitted — at *board* extent rather than viewport extent, so a panning camera is a blit at a different offset rather than a rebake, and the bake only repeats when the cell size or the palette changes. And a vehicle that is not mid-bump draws the identical picture every frame, so it is rendered once into its own small canvas and blitted thereafter — a still frame costs one ground image plus one image per car. Anything mid-bump falls back to painting live, which is at most a car or two at a time; both paths call the same paint function, so there is exactly one description of what a car looks like. Nothing uses `shadowBlur` — every soft edge here is cheaper as a stack of shapes.
 
 Slides use an anticipation ease: a short pull-back, an eased run, a two-bounce suspension settle, and a body that leans against its own acceleration. Exits accelerate away. The last car gets four tenths of a second of slow motion and a camera pull-back.
+
+#### Fitting a growing lot on a fixed screen
+
+Cells are sized to fit the play area — the region between the HUD and the boosters, which the grid layout guarantees the board can never escape. As the grid grows the cells shrink, which is the whole point: same screen, more car park.
+
+They stop shrinking at 30 CSS pixels. A car is two cells long, so its *short* axis is one cell, and that is what a thumb has to land on in a packed lot; below thirty, picking the right car stops being a puzzle and starts being a dexterity test. Past that floor the lot **pans** instead — drag the asphalt to look around, double-tap it to flip between "whole jam visible" and "cells you can play". Dragging a car near the edge brings the view with it, so a gesture never walks its own car off screen, and keyboard selection follows the cursor for the same reason.
+
+The floor yields up to 8% before panning engages, so a lot that *nearly* fits is shown whole at slightly tighter cells rather than with one column hanging off the edge. In practice that means a 412 px phone plays the entire campaign without panning, a 360 px one pans from about level fifteen, and the on-ramp never pans anywhere — early levels should not have to teach a camera control as well as the game.
+
+`npm run progression` screenshots the milestone jams at three screen sizes and asserts each one sits between the HUD and the boosters at a touchable size.
 
 ### `src/audio` — no sample bytes
 
@@ -137,9 +188,11 @@ Vehicle identity is never colour-only: class silhouettes differ, facing reads fr
 
 ## Testing
 
-`npm test` runs 127 unit tests: sim geometry and every modifier, solver optimality and dead-end detection, the full 320-level campaign audited for validity, solvability, par, band mix, gate compliance and difficulty scaling, plus the economy, medals, Metered-Lot gating and save layers.
+`npm test` runs 142 unit tests: sim geometry and every modifier, solver optimality and dead-end detection, the full 320-level campaign audited for validity, solvability, par, band mix, gate compliance and difficulty scaling, the progression contract, plus the economy, medals, Metered-Lot gating and save layers.
 
-The solvability audit is the one that makes the difficulty curve safe to move. Every one of the 320 lots is re-verified on each run to be clearable *and* clearable in exactly one slide per car — so packing them denser and knotting them deeper cannot quietly ship an unfair jam.
+The solvability audit is the one that makes the difficulty curve safe to move. Every one of the 320 lots is re-verified on each run to be clearable *and* clearable in exactly one slide per car plus the repositions the lot was built to force — so packing them denser and knotting them deeper cannot quietly ship an unfair jam.
+
+`tests/progression.test.ts` audits the curve as a curve rather than as 320 separate lots: that the grid grows and never shrinks, that levels 1, 5, 10, 15 and 20 hit their size, density, depth and solution-length marks, that free parking dries up and bottlenecks multiply between them, that the late game really does require a temporary reposition — and that every one of them fits five different screen sizes with cells a thumb can hit.
 
 `npm run smoke` is the one that catches what unit tests cannot. It boots the real game in Chromium at phone resolution, clears levels by dispatching genuine pointer events, drags a blocked car to check it bumps rather than escapes, undoes a slide, opens a hint, plays a Night Shift lot, runs a Metered Lot dry to check the save-me appears and that declining lands on a breather, plays a level with the keyboard alone, walks every meta screen, and fails on any console error, page exception, failed request, stacked modal or empty screen.
 
@@ -149,11 +202,13 @@ That figure is up from roughly 240 ms before the lot was textured, and the diffe
 
 `npm run gallery` screenshots a spread of lots covering every vehicle class and modifier, plus the colourblind, high-contrast and Night Shift modes — the fastest way to see whether a rendering change reads at a glance.
 
-`npm run journey` goes the long way round: it restores two districts through the UI, watches the timelapse, collects capped income, builds a landmark, buys and equips a livery, then screenshots every accessibility mode and three viewports down to 320px, failing on any sideways scroll. `npm run perf` reports frame times.
+`npm run journey` goes the long way round: it restores two districts through the UI, watches the timelapse, collects capped income, builds a landmark, buys and equips a livery, then screenshots every accessibility mode and three viewports down to 320px, failing on any sideways scroll. `npm run perf` reports frame times — 16.7 ms flat at thirty-two cars, on a 4 MB heap.
 
-Both write screenshots to `/tmp/gridlock-shots` for eyeballing.
+`npm run progression` is the one that watches the curve happen. It loads levels 1, 5, 10, 15, 20 and 24 on a small phone, a large phone and a tablet, prints the grid, car count, cell size and whether the lot needed to pan, screenshots each, and fails if any board overlaps the HUD or the boosters, spills outside a viewport it claims to fit, or drops below a touchable cell size.
 
-`window.__gridlock` exposes the live sim for that harness — which car can leave, where a cell lands on screen, and a `jumpTo(level)` that goes through the app rather than racing the save file.
+All of them write screenshots to `/tmp/gridlock-shots` for eyeballing.
+
+`window.__gridlock` exposes the live sim for those harnesses — which car can leave, where a cell lands on screen, a `playBestMove()` that can open a deadlock ring a tapping bot cannot, and a `jumpTo(level)` that goes through the app rather than racing the save file.
 
 ## What is not here
 

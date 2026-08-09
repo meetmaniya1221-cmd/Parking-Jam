@@ -166,21 +166,65 @@ export interface Particle {
  * Geometry helpers
  * ------------------------------------------------------------------ */
 
+/**
+ * Smallest cell the game will draw before it starts panning instead.
+ *
+ * A car is two cells long, so its *short* axis is one cell wide and that is
+ * what a thumb has to land on in a packed lot. Thirty CSS pixels is about the
+ * floor for that; below it, picking the right car out of a crowd stops being a
+ * puzzle and starts being a dexterity test, which is not the game.
+ */
+export const MIN_CELL_PX = 30;
+
+/**
+ * …tempered by the screen actually in front of the player. On a genuinely small
+ * viewport, holding the floor would push most of the lot off-screen and cost
+ * more than the small cells did — so the floor gives way rather than the board.
+ */
+export function comfortableCell(widthPx: number, heightPx: number): number {
+  return Math.max(18, Math.min(MIN_CELL_PX, Math.min(widthPx, heightPx) / 9));
+}
+
+export interface CameraFit extends Camera {
+  /** True when the lot is wider or taller than the viewport at this cell size. */
+  overflow: boolean;
+  /** Cell width at which the whole lot would be visible at once. */
+  fitCw: number;
+}
+
+/**
+ * Place the lot in the viewport.
+ *
+ * Cells are sized to fit unless that would take them below `minCell`, in which
+ * case the lot is drawn at the floor and the caller pans. Early lots are small
+ * enough that this never triggers and the board simply sits centred, exactly as
+ * it always has; it is the twelve- and thirteen-column late lots on a phone
+ * that need the other branch.
+ */
 export function fitCamera(
   level: LevelDef,
   widthPx: number,
   heightPx: number,
   padding: number,
-): Camera {
+  minCell = 0,
+): CameraFit {
   const availableW = Math.max(32, widthPx - padding * 2);
   const availableH = Math.max(32, heightPx - padding * 2);
-  const cw = Math.min(availableW / level.w, availableH / (level.h * CELL_ASPECT));
+  const fitCw = Math.min(availableW / level.w, availableH / (level.h * CELL_ASPECT));
+  // Give the floor a little rather than start panning over a few pixels: a lot
+  // that *nearly* fits is far better shown whole at slightly tighter cells than
+  // shown at the comfort size with one column hanging off the edge.
+  const cw = fitCw >= minCell * 0.92 ? fitCw : Math.max(fitCw, minCell);
   const ch = cw * CELL_ASPECT;
+  const boardW = level.w * cw;
+  const boardH = level.h * ch;
   return {
-    ox: (widthPx - level.w * cw) / 2,
-    oy: (heightPx - level.h * ch) / 2,
+    ox: (widthPx - boardW) / 2,
+    oy: (heightPx - boardH) / 2,
     cw,
     ch,
+    overflow: boardW > availableW + 0.5 || boardH > availableH + 0.5,
+    fitCw,
   };
 }
 

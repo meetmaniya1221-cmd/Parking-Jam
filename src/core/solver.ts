@@ -3,12 +3,18 @@
  *
  * Two strategies, cheapest first:
  *
- *  1. **Exit-only search.** Vehicles never reposition, so occupancy is a pure
- *     function of "who is left" and the search memoises on a bitmask. When it
- *     succeeds the answer is provably optimal: clearing n vehicles needs at
- *     least n slides, and this clears them in exactly n.
- *  2. **Bounded best-first search** over full slide/pivot moves, for lots that
- *     genuinely need repositioning.
+ *  1. **Exit closure.** A vehicle only ever leaves along its own facing, so
+ *     removing one can never block another: "who can leave right now" grows
+ *     monotonically as the lot empties. Exit-only play is therefore *confluent*
+ *     — repeatedly driving off whoever can go reaches the same terminal lot no
+ *     matter what order you pick, and reaches it in linear time. That single
+ *     observation replaces what used to be an exponential memoised DFS, and it
+ *     is what makes forty-car lots tractable at all.
+ *  2. **Reposition search.** When the closure strands cars, the lot needs a
+ *     temporary move. Because exits are never harmful, taking every available
+ *     exit before considering a slide loses no solutions — so the search only
+ *     ever branches on slides from a stuck lot, and iterative deepening on the
+ *     number of repositions returns a provably minimal answer.
  *
  * Every shipped level is verified through this module (GDD §8: "every jam
  * solvable unaided, solver-verified, forever").
@@ -19,9 +25,8 @@ import {
   cloneLotState,
   createLotState,
   exitableVehicles,
-  exitIndexAt,
+  hasExitAt,
   inBounds,
-  isCleared,
   legalMoves,
   probe,
   stateKey,
@@ -40,17 +45,30 @@ export interface SolveResult {
   nodes: number;
   /** True when the whole lot clears without any vehicle repositioning. */
   exitOnly: boolean;
+  /** Non-exit moves in the witness solution — the temporary repositions. */
+  repositions: number;
 }
 
 export interface SolveOptions {
-  /** Node budget for the fallback search. */
+  /** Node budget for the reposition search. */
   maxNodes?: number;
-  /** Skip the expensive fallback; exit-only failures report "not solvable here". */
+  /**
+   * How many temporary repositions the search may spend. 0 means exit-only:
+   * a lot that needs a car pulled aside reports "not solvable here".
+   */
+  maxRepositions?: number;
+  /** Legacy alias for `maxRepositions: 0`. */
   exitOnlyOnly?: boolean;
 }
 
-const DEFAULT_MAX_NODES = 120_000;
-const MAX_F = 512;
+/**
+ * Node budget for the reposition search. A node is one slide plus the exit
+ * closure that follows it, so this is a few thousand full lot replays — plenty
+ * for the one- or two-move knots the generator actually builds, and small
+ * enough that a hint on a forty-car lot still lands inside a frame or two.
+ */
+const DEFAULT_MAX_NODES = 4_000;
+const DEFAULT_MAX_REPOSITIONS = 2;
 
 const UNSOLVED: SolveResult = Object.freeze({
   solvable: false,
@@ -59,11 +77,33 @@ const UNSOLVED: SolveResult = Object.freeze({
   optimal: false,
   nodes: 0,
   exitOnly: false,
+  repositions: 0,
 });
 
 /* ------------------------------------------------------------------ *
- * Strategy 1 — exit-only search
+ * Strategy 1 — exit closure
  * ------------------------------------------------------------------ */
+
+/**
+ * Drive off everyone who can go, repeatedly, mutating `state`. Returns the exit
+ * order — every vehicle when the lot clears, a prefix when it strands.
+ *
+ * Confluence (see the module note) means the stranded remainder is a property
+ * of the lot, not of the order: this is the lot's *residual knot*.
+ */
+function exitClosure(state: LotState, out: Move[]): void {
+  let progress = true;
+  while (progress && state.remaining > 0) {
+    progress = false;
+    for (const vi of exitableVehicles(state)) {
+      const mv = exitMoveFor(state, vi);
+      if (!mv) continue;
+      applyMove(state, mv);
+      out.push(mv);
+      progress = true;
+    }
+  }
+}
 
 /**
  * Find an order in which every remaining vehicle drives straight off the lot
@@ -71,43 +111,9 @@ const UNSOLVED: SolveResult = Object.freeze({
  */
 export function solveExitOnly(start: LotState): number[] | null {
   const state = cloneLotState(start);
-  const n = state.x.length;
-  const useBitmask = n <= 30;
-  const deadNum = new Set<number>();
-  const deadStr = new Set<string>();
-  const order: number[] = [];
-
-  let mask = 0;
-  if (useBitmask) for (let i = 0; i < n; i++) if (state.gone[i]) mask |= 1 << i;
-  const goal = (1 << n) - 1;
-
-  const walk = (m: number): boolean => {
-    if (state.remaining === 0) return true;
-    if (useBitmask) {
-      if (m === goal) return true;
-      if (deadNum.has(m)) return false;
-    } else {
-      const key = String.fromCharCode.apply(null, Array.from(state.gone));
-      if (deadStr.has(key)) return false;
-    }
-
-    for (const vi of exitableVehicles(state)) {
-      const mv = exitMoveFor(state, vi);
-      if (!mv) continue;
-      const undo = snapshot(state, vi);
-      applyMove(state, mv);
-      order.push(vi);
-      if (walk(useBitmask ? m | (1 << vi) : 0)) return true;
-      order.pop();
-      restore(state, undo);
-    }
-
-    if (useBitmask) deadNum.add(m);
-    else deadStr.add(String.fromCharCode.apply(null, Array.from(state.gone)));
-    return false;
-  };
-
-  return walk(mask) ? order.slice() : null;
+  const moves: Move[] = [];
+  exitClosure(state, moves);
+  return state.remaining === 0 ? moves.map((m) => m.vi) : null;
 }
 
 function exitMoveFor(s: LotState, vi: number): Move | null {
@@ -125,122 +131,81 @@ function exitMoveFor(s: LotState, vi: number): Move | null {
   };
 }
 
-interface Snapshot {
-  vi: number;
-  x: number;
-  y: number;
-  facing: number;
-  gone: number;
-  remaining: number;
-  vips: number;
-  slides: number;
-  cells: Int32Array;
-}
-
-/** Cheap undo record for a single-vehicle move (avoids cloning the whole state). */
-function snapshot(s: LotState, vi: number): Snapshot {
-  const w = s.level.w;
-  const f = s.facing[vi] as Dir;
-  const cells = new Int32Array(s.len[vi]);
-  for (let k = 0; k < s.len[vi]; k++) {
-    cells[k] = (s.y[vi] - DY[f] * k) * w + (s.x[vi] - DX[f] * k);
-  }
-  return {
-    vi,
-    x: s.x[vi],
-    y: s.y[vi],
-    facing: s.facing[vi],
-    gone: s.gone[vi],
-    remaining: s.remaining,
-    vips: s.vipsRemaining,
-    slides: s.slides,
-    cells,
-  };
-}
-
-function restore(s: LotState, u: Snapshot): void {
-  const w = s.level.w;
-  if (!s.gone[u.vi]) {
-    const f = s.facing[u.vi] as Dir;
-    for (let k = 0; k < s.len[u.vi]; k++) {
-      s.occ[(s.y[u.vi] - DY[f] * k) * w + (s.x[u.vi] - DX[f] * k)] = -1;
-    }
-  }
-  s.x[u.vi] = u.x;
-  s.y[u.vi] = u.y;
-  s.facing[u.vi] = u.facing;
-  s.gone[u.vi] = u.gone;
-  s.remaining = u.remaining;
-  s.vipsRemaining = u.vips;
-  s.slides = u.slides;
-  if (!u.gone) for (const c of u.cells) s.occ[c] = u.vi;
-}
-
 /* ------------------------------------------------------------------ *
- * Strategy 2 — bounded best-first search
+ * Strategy 2 — reposition search
  * ------------------------------------------------------------------ */
 
-interface SearchNode {
-  state: LotState;
-  moves: Move[];
-  cost: number;
+/**
+ * Slides worth trying from a stranded lot.
+ *
+ * Everything that could drive off already has, so the only useful thing a slide
+ * can do is take a car out of somebody else's lane. Cars that stand on nobody's
+ * route are therefore skipped outright — on a packed lot that is most of them,
+ * and it is the difference between a branching factor of two hundred and one of
+ * a dozen.
+ */
+function usefulSlides(state: LotState): Move[] {
+  const slides = legalMoves(state).filter((m) => m.kind !== MoveKind.Exit);
+  // A handful of stranded cars is cheap to search exhaustively, and doing so
+  // keeps the answer exact — including the second-order case where a car has to
+  // shuffle out of the way of the car that is actually in the way.
+  if (state.remaining <= EXHAUSTIVE_REMAINDER) return slides;
+
+  const inTheWay = new Set<number>();
+  for (let vi = 0; vi < state.x.length; vi++) {
+    if (state.gone[vi]) continue;
+    for (const b of directBlockers(state, vi)) inTheWay.add(b);
+  }
+  const filtered = slides.filter((m) => m.kind === MoveKind.Pivot || inTheWay.has(m.vi));
+  return filtered.length > 0 ? filtered : slides;
 }
 
+/** Below this many cars left, the reposition search stops pruning its branches. */
+const EXHAUSTIVE_REMAINDER = 8;
+
+interface SearchBudget {
+  nodes: number;
+  limit: number;
+}
+
+/** Deepest remaining-reposition budget a state has already been expanded with. */
+type SeenDepths = Map<string, number>;
+
 /**
- * Best-first over f = slides + vehicles-remaining. Every edge costs 1 slide and
- * removes at most one vehicle, so f never decreases — a bucket queue scanned
- * upward behaves exactly like Dijkstra, and the first goal popped is optimal
- * unless the node budget truncated the frontier.
+ * Can this lot clear using at most `budgetMoves` temporary repositions?
+ *
+ * Exits never hurt — driving one car off can only free lanes for the rest — so
+ * every solution can be rewritten to take all available exits before its next
+ * slide. Running the closure at each node and branching only on slides is
+ * therefore lossless, and searching depth 0, then 1, then 2 returns a line with
+ * the fewest possible repositions.
  */
-function searchGeneral(start: LotState, maxNodes: number): SolveResult {
-  const seen = new Map<string, number>();
-  const buckets: SearchNode[][] = [];
-  let nodes = 0;
-  let truncated = false;
+function searchRepositions(
+  state: LotState,
+  depth: number,
+  moves: Move[],
+  seen: SeenDepths,
+  budget: SearchBudget,
+): Move[] | null {
+  exitClosure(state, moves);
+  if (state.remaining === 0) return moves;
+  if (depth === 0) return null;
 
-  const push = (node: SearchNode) => {
-    const f = node.cost + node.state.remaining;
-    if (f >= MAX_F) return;
-    (buckets[f] ??= []).push(node);
-  };
-
-  push({ state: start, moves: [], cost: 0 });
-  seen.set(stateKey(start), 0);
-
-  for (let f = 0; f < MAX_F && !truncated; f++) {
-    const bucket = buckets[f];
-    if (!bucket) continue;
-    while (bucket.length) {
-      const node = bucket.pop()!;
-      if (isCleared(node.state)) {
-        return {
-          solvable: true,
-          parSlides: node.cost,
-          moves: node.moves,
-          optimal: !truncated,
-          nodes,
-          exitOnly: node.moves.every((m) => m.kind === MoveKind.Exit),
-        };
-      }
-      if (nodes >= maxNodes) {
-        truncated = true;
-        break;
-      }
-      for (const mv of legalMoves(node.state)) {
-        const next = cloneLotState(node.state);
-        applyMove(next, mv);
-        nodes++;
-        const key = stateKey(next);
-        const cost = node.cost + 1;
-        const prev = seen.get(key);
-        if (prev !== undefined && prev <= cost) continue;
-        seen.set(key, cost);
-        push({ state: next, moves: node.moves.concat(mv), cost });
-      }
-    }
+  for (const mv of usefulSlides(state)) {
+    if (budget.nodes >= budget.limit) return null;
+    budget.nodes++;
+    const next = cloneLotState(state);
+    applyMove(next, mv);
+    const key = stateKey(next);
+    // Re-expand a state only when there is more reposition budget left than the
+    // last time it was reached; otherwise the earlier visit already covered it.
+    const before = seen.get(key);
+    if (before !== undefined && before >= depth - 1) continue;
+    seen.set(key, depth - 1);
+    const line = searchRepositions(next, depth - 1, moves.concat(mv), seen, budget);
+    if (line) return line;
   }
-
-  return { ...UNSOLVED, optimal: !truncated, nodes };
+  return null;
 }
 
 /* ------------------------------------------------------------------ *
@@ -249,31 +214,40 @@ function searchGeneral(start: LotState, maxNodes: number): SolveResult {
 
 export function solveState(start: LotState, opts: SolveOptions = {}): SolveResult {
   if (start.remaining === 0) {
-    return { solvable: true, parSlides: 0, moves: [], optimal: true, nodes: 0, exitOnly: true };
-  }
-
-  const order = solveExitOnly(start);
-  if (order) {
-    const replay = cloneLotState(start);
-    const moves: Move[] = [];
-    for (const vi of order) {
-      const mv = exitMoveFor(replay, vi);
-      if (!mv) break;
-      moves.push(mv);
-      applyMove(replay, mv);
-    }
     return {
       solvable: true,
-      parSlides: moves.length,
-      moves,
+      parSlides: 0,
+      moves: [],
       optimal: true,
       nodes: 0,
       exitOnly: true,
+      repositions: 0,
     };
   }
 
-  if (opts.exitOnlyOnly) return { ...UNSOLVED };
-  return searchGeneral(cloneLotState(start), opts.maxNodes ?? DEFAULT_MAX_NODES);
+  const maxRepositions = opts.exitOnlyOnly ? 0 : (opts.maxRepositions ?? DEFAULT_MAX_REPOSITIONS);
+  const budget: SearchBudget = { nodes: 0, limit: opts.maxNodes ?? DEFAULT_MAX_NODES };
+
+  // Iterative deepening on repositions, so the first line found is the one that
+  // asks the player for the fewest temporary moves.
+  for (let depth = 0; depth <= maxRepositions; depth++) {
+    const line = searchRepositions(cloneLotState(start), depth, [], new Map(), budget);
+    if (line) {
+      const repositions = line.reduce((n, m) => n + (m.kind === MoveKind.Exit ? 0 : 1), 0);
+      return {
+        solvable: true,
+        parSlides: line.length,
+        moves: line,
+        optimal: true,
+        nodes: budget.nodes,
+        exitOnly: repositions === 0,
+        repositions,
+      };
+    }
+    if (budget.nodes >= budget.limit) break;
+  }
+
+  return { ...UNSOLVED, optimal: budget.nodes < budget.limit, nodes: budget.nodes };
 }
 
 export function solveLevel(level: LevelDef, opts: SolveOptions = {}): SolveResult {
@@ -285,7 +259,7 @@ export function solveLevel(level: LevelDef, opts: SolveOptions = {}): SolveResul
  * player's current position (GDD §5 "highlights the next 3 vehicles").
  */
 export function hintFrom(state: LotState, count = 3): number[] {
-  const res = solveState(state, { maxNodes: 40_000 });
+  const res = solveState(state, { maxNodes: 2_000 });
   if (!res.solvable) return [];
   const out: number[] = [];
   for (const m of res.moves) {
@@ -299,13 +273,18 @@ export function hintFrom(state: LotState, count = 3): number[] {
 
 /** First move of a valid solution — keeps a hint actionable even mid-reposition. */
 export function nextMoveHint(state: LotState): Move | null {
-  const res = solveState(state, { maxNodes: 40_000 });
+  const res = solveState(state, { maxNodes: 2_000 });
   return res.solvable && res.moves.length ? res.moves[0] : null;
 }
 
-/** True when the lot can still be cleared from here. Used to guard against dead ends. */
+/**
+ * True when the lot can still be cleared from here. Used to guard against dead
+ * ends, so it errs generous: a search that runs out of budget reports "keep
+ * playing" rather than telling a player their lot is dead when it may not be.
+ */
 export function isStillSolvable(state: LotState): boolean {
-  return solveState(state, { maxNodes: 60_000 }).solvable;
+  const res = solveState(state, { maxNodes: 3_000, maxRepositions: 3 });
+  return res.solvable || !res.optimal;
 }
 
 /* ------------------------------------------------------------------ *
@@ -323,7 +302,24 @@ export interface DifficultyMetrics {
   forcedSteps: number;
   vehicleCount: number;
   parSlides: number;
+  /**
+   * Cars that at least `BOTTLENECK_SPAN` others transitively wait on. These are
+   * the corks: the lot does not open until they do, and finding them is the
+   * whole read of a large jam.
+   */
+  bottlenecks: number;
+  /** The single most-waited-on car's transitive dependent count. */
+  widestBottleneck: number;
+  /** Share of cars that neither block anybody nor are blocked — free parking. */
+  independentRatio: number;
+  /** Share of lot cells under a vehicle. The lot's visual and tactical fullness. */
+  density: number;
+  /** Non-exit moves the shortest known solution needs. */
+  repositions: number;
 }
+
+/** How many waiting cars make a car a bottleneck rather than merely a blocker. */
+export const BOTTLENECK_SPAN = 3;
 
 /**
  * Vehicles physically sitting on `vi`'s straight path to its curb cut.
@@ -344,7 +340,7 @@ export function directBlockers(s: LotState, vi: number): number[] {
     if (!inBounds(level, cx, cy)) {
       const px = s.x[vi] + DX[f] * (k - 1);
       const py = s.y[vi] + DY[f] * (k - 1);
-      return exitIndexAt(level, px, py, f) >= 0 ? blockers : [];
+      return hasExitAt(level, px, py, f) ? blockers : [];
     }
     if (terrainAt(level, cx, cy) === Terrain.Blocked) return []; // no straight route at all
     const arrow = level.arrows[cy * level.w + cx];
@@ -383,13 +379,52 @@ export function analyseDifficulty(level: LevelDef, solution?: Move[]): Difficult
 
   const blocksSomeone = new Set<number>();
   for (const list of blockers) for (const b of list) blocksSomeone.add(b);
+  const isBlocked = blockers.map((list) => list.length > 0);
+
+  // Transitive dependents: everyone downstream of each car in the precedence
+  // DAG. A wide fan-out here is what a bottleneck actually is — one car whose
+  // exit unlocks a whole quarter of the lot.
+  const waiters: number[][] = Array.from({ length: n }, () => []);
+  for (let vi = 0; vi < n; vi++) for (const b of blockers[vi]) waiters[b].push(vi);
+
+  let bottlenecks = 0;
+  let widestBottleneck = 0;
+  const stack: number[] = [];
+  for (let vi = 0; vi < n; vi++) {
+    if (waiters[vi].length === 0) continue;
+    const reached = new Set<number>();
+    stack.length = 0;
+    stack.push(vi);
+    while (stack.length) {
+      const at = stack.pop()!;
+      for (const w of waiters[at]) {
+        if (reached.has(w)) continue;
+        reached.add(w);
+        stack.push(w);
+      }
+    }
+    if (reached.size > widestBottleneck) widestBottleneck = reached.size;
+    if (reached.size >= BOTTLENECK_SPAN) bottlenecks++;
+  }
+
+  let independent = 0;
+  let occupied = 0;
+  for (let vi = 0; vi < n; vi++) {
+    if (!isBlocked[vi] && !blocksSomeone.has(vi)) independent++;
+    occupied += state.len[vi];
+  }
 
   const replay = createLotState(level);
   const openExits = exitableVehicles(replay).length;
   let forcedSteps = 0;
   const moves = solution ?? solveLevel(level).moves;
+  let repositions = 0;
   for (const m of moves) {
-    if (m.kind === MoveKind.Exit && exitableVehicles(replay).length === 1) forcedSteps++;
+    if (m.kind === MoveKind.Exit) {
+      if (exitableVehicles(replay).length === 1) forcedSteps++;
+    } else {
+      repositions++;
+    }
     applyMove(replay, m);
   }
 
@@ -400,6 +435,11 @@ export function analyseDifficulty(level: LevelDef, solution?: Move[]): Difficult
     forcedSteps,
     vehicleCount: n,
     parSlides: moves.length,
+    bottlenecks,
+    widestBottleneck,
+    independentRatio: n === 0 ? 0 : independent / n,
+    density: occupied / (level.w * level.h),
+    repositions,
   };
 }
 

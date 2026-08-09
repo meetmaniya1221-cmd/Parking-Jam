@@ -41,6 +41,7 @@ import { findHorn, findRide, fleetColor, HornShape } from '../meta/garage';
 import { Settings } from '../meta/save';
 import {
   Camera,
+  comfortableCell,
   drawGround,
   drawNightMask,
   drawParticles,
@@ -120,6 +121,23 @@ const RUBBER = 0.24;
 /** Furthest back a player can step. Mistakes are free, but memory is not. */
 const HISTORY_LIMIT = 64;
 
+/**
+ * Ceiling on the baked ground image, in device pixels.
+ *
+ * The asphalt is baked once for the whole lot rather than once per viewport, so
+ * that panning is a blit rather than a re-bake. A 13×16 lot at a comfortable
+ * cell size is well inside this; the cap is there so an unusually large lot on
+ * an unusually dense screen degrades to a slightly soft ground rather than to a
+ * hundred-megabyte allocation.
+ */
+const MAX_GROUND_PX = 4_000_000;
+
+/** How much of the lot must stay on screen when panned to its limit. */
+const PAN_KEEP = 0.55;
+
+/** Beyond this the drag is a pan, not a tap on the asphalt. */
+const PAN_SLOP_PX = 6;
+
 const easeInQuad = (t: number) => t * t;
 
 /**
@@ -147,6 +165,25 @@ export class LotView {
   private targetCameraScale = 1;
   private ground: HTMLCanvasElement | null = null;
   private groundDirty = true;
+  /** Cell size the current ground image was baked at, so panning never rebakes. */
+  private bakedCw = 0;
+  private groundMargin = 0;
+  private groundW = 0;
+  private groundH = 0;
+
+  /**
+   * Player-applied camera offset, in CSS pixels. Zero — and inert — whenever the
+   * whole lot fits, which is every lot until the boards get big.
+   */
+  private panX = 0;
+  private panY = 0;
+  private overflows = false;
+  /** True while a drag on empty asphalt is moving the view rather than a car. */
+  private panning = false;
+  private panFrom = { x: 0, y: 0, panX: 0, panY: 0 };
+  /** 'fit' shows the whole lot however small; 'comfort' holds the minimum cell size. */
+  private zoomMode: 'fit' | 'comfort' = 'comfort';
+  private lastTapAt = 0;
 
   private anims: Anim[] = [];
   private particles: Particle[] = [];
@@ -259,6 +296,10 @@ export class LotView {
     this.targetCameraScale = 1;
     this.groundDirty = true;
     this.interactive = true;
+    this.panning = false;
+    this.panX = 0;
+    this.panY = 0;
+    this.zoomMode = 'comfort';
     this.resize();
   }
 
@@ -423,11 +464,82 @@ export class LotView {
     if (this.canvas.width !== pixelW || this.canvas.height !== pixelH) {
       this.canvas.width = pixelW;
       this.canvas.height = pixelH;
-      this.groundDirty = true;
     }
-    const padding = Math.max(10, Math.min(width, height) * 0.05);
-    this.camera = fitCamera(this.level, width, height, padding);
-    this.groundDirty = true;
+    // Padding scales with the *cell*, not the viewport, so a big lot does not
+    // give away a tenth of its width to margin it cannot afford.
+    const padding = Math.max(8, Math.min(width, height) * 0.045);
+    const minCell = this.zoomMode === 'fit' ? 0 : comfortableCell(width, height);
+    const fit = fitCamera(this.level, width, height, padding, minCell);
+    this.overflows = fit.overflow;
+    if (this.camera.cw !== fit.cw) this.groundDirty = true;
+    this.camera = { ox: fit.ox, oy: fit.oy, cw: fit.cw, ch: fit.ch };
+    if (!this.overflows) {
+      this.panX = 0;
+      this.panY = 0;
+    }
+    this.applyPan();
+  }
+
+  /**
+   * Re-centre the lot under the current pan, clamped so the player can never
+   * scroll the asphalt entirely off screen.
+   */
+  private applyPan(): void {
+    const width = this.canvas.width / this.dpr;
+    const height = this.canvas.height / this.dpr;
+    const boardW = this.level.w * this.camera.cw;
+    const boardH = this.level.h * this.camera.ch;
+
+    const clampAxis = (pan: number, board: number, viewport: number): number => {
+      if (board <= viewport) return 0;
+      // Always leave most of the lot on screen: the limit is how far the far
+      // edge may travel past the near one, never a free-floating canvas.
+      const slack = (board - viewport) / 2 + viewport * (1 - PAN_KEEP);
+      return Math.max(-slack, Math.min(slack, pan));
+    };
+
+    this.panX = clampAxis(this.panX, boardW, width);
+    this.panY = clampAxis(this.panY, boardH, height);
+    this.camera.ox = (width - boardW) / 2 + this.panX;
+    this.camera.oy = (height - boardH) / 2 + this.panY;
+  }
+
+  /** True when the lot is larger than the viewport and can be dragged around. */
+  get canPan(): boolean {
+    return this.overflows;
+  }
+
+  /** Flip between "whole lot visible" and "cells big enough to touch". */
+  toggleZoom(): void {
+    this.zoomMode = this.zoomMode === 'fit' ? 'comfort' : 'fit';
+    this.panX = 0;
+    this.panY = 0;
+    this.resize();
+    this.audio.uiTap();
+  }
+
+  /**
+   * Keep the car being dragged on screen.
+   *
+   * Without this a drag toward the edge of a panned lot walks the car out of
+   * view mid-gesture, taking the path preview and the blocked-cell tint with
+   * it — the player would be steering blind at exactly the moment the feedback
+   * matters most.
+   */
+  private followVehicle(gx: number, gy: number): void {
+    if (!this.overflows) return;
+    const width = this.canvas.width / this.dpr;
+    const height = this.canvas.height / this.dpr;
+    const marginX = Math.min(width * 0.3, this.camera.cw * 2);
+    const marginY = Math.min(height * 0.3, this.camera.ch * 2);
+    const sx = this.camera.ox + (gx + 0.5) * this.camera.cw;
+    const sy = this.camera.oy + (gy + 0.5) * this.camera.ch;
+
+    if (sx < marginX) this.panX += marginX - sx;
+    else if (sx > width - marginX) this.panX -= sx - (width - marginX);
+    if (sy < marginY) this.panY += marginY - sy;
+    else if (sy > height - marginY) this.panY -= sy - (height - marginY);
+    this.applyPan();
   }
 
   /* ---------------------------------------------------------------- *
@@ -449,7 +561,17 @@ export class LotView {
     if (!this.interactive) return;
     const point = this.localPoint(e);
     const vi = this.vehicleAt(point.x, point.y);
-    if (vi < 0) return;
+    if (vi < 0) {
+      // Empty asphalt. On a lot that fits, nothing to do — which is every lot
+      // until the boards get big, so early levels behave exactly as before.
+      if (!this.overflows) return;
+      e.preventDefault();
+      this.canvas.setPointerCapture(e.pointerId);
+      this.pointerId = e.pointerId;
+      this.panning = true;
+      this.panFrom = { x: point.x, y: point.y, panX: this.panX, panY: this.panY };
+      return;
+    }
     e.preventDefault();
     if (this.tapTarget) {
       const handler = this.tapTarget;
@@ -476,6 +598,14 @@ export class LotView {
   };
 
   private onPointerMove = (e: PointerEvent): void => {
+    if (this.panning && e.pointerId === this.pointerId) {
+      e.preventDefault();
+      const point = this.localPoint(e);
+      this.panX = this.panFrom.panX + (point.x - this.panFrom.x);
+      this.panY = this.panFrom.panY + (point.y - this.panFrom.y);
+      this.applyPan();
+      return;
+    }
     if (this.dragVi < 0 || e.pointerId !== this.pointerId) return;
     e.preventDefault();
     const point = this.localPoint(e);
@@ -516,6 +646,10 @@ export class LotView {
     this.lastPointerAt = now;
     this.lastOffset = clamped;
     this.dragOffset = clamped;
+    this.followVehicle(
+      this.state.x[this.dragVi] + DX[facing] * clamped,
+      this.state.y[this.dragVi] + DY[facing] * clamped,
+    );
 
     // Dragging past the curb cut commits the exit immediately — no second tap.
     if (cap.forward.exitDist >= 0 && clamped >= cap.forward.exitDist + 0.35) {
@@ -529,6 +663,23 @@ export class LotView {
   };
 
   private onPointerUp = (e: PointerEvent): void => {
+    if (this.panning && e.pointerId === this.pointerId) {
+      const point = this.localPoint(e);
+      const moved = Math.hypot(point.x - this.panFrom.x, point.y - this.panFrom.y);
+      this.endPan();
+      // A tap on empty asphalt, twice in quick succession, swaps between seeing
+      // the whole jam and seeing it at a size you can play.
+      if (moved <= PAN_SLOP_PX) {
+        const now = performance.now();
+        if (now - this.lastTapAt < 320) {
+          this.lastTapAt = 0;
+          this.toggleZoom();
+        } else {
+          this.lastTapAt = now;
+        }
+      }
+      return;
+    }
     if (this.dragVi < 0 || e.pointerId !== this.pointerId) return;
     const vi = this.dragVi;
     const elapsed = performance.now() - this.dragStartAt;
@@ -558,10 +709,26 @@ export class LotView {
   };
 
   private onPointerCancel = (): void => {
+    if (this.panning) {
+      this.endPan();
+      return;
+    }
     const vi = this.dragVi;
     this.cancelDrag();
     if (vi >= 0) this.settle(vi);
   };
+
+  private endPan(): void {
+    this.panning = false;
+    if (this.pointerId !== null) {
+      try {
+        this.canvas.releasePointerCapture(this.pointerId);
+      } catch {
+        /* pointer already released */
+      }
+    }
+    this.pointerId = null;
+  }
 
   /**
    * Keyboard play. The lot is a grid of discrete objects, so it maps cleanly to
@@ -587,6 +754,9 @@ export class LotView {
       const at = live.indexOf(this.keyboardVi);
       this.keyboardVi = live[(at + delta + live.length) % live.length];
       this.anims[this.keyboardVi].highlight = 1;
+      // Keyboard play on a lot bigger than the screen has to bring the cursor
+      // into view, or the selection is invisible and the game is unplayable.
+      this.followVehicle(this.state.x[this.keyboardVi], this.state.y[this.keyboardVi]);
       this.audio.pickUp();
     };
 
@@ -1073,18 +1243,43 @@ export class LotView {
     }
   }
 
+  /**
+   * Bake the asphalt for the *whole lot*, not for the viewport.
+   *
+   * The ground is the most expensive thing drawn — grain, stains, bay lines,
+   * scuffs, kerb — and a panning camera would otherwise rebake it on every
+   * frame of a drag. Baked at board extent instead, panning is a single blit at
+   * a different offset, and the bake only repeats when the cell size or the
+   * palette changes.
+   */
   private bakeGround(): void {
-    const w = this.canvas.width;
-    const h = this.canvas.height;
-    if (w === 0 || h === 0) return;
+    if (this.canvas.width === 0 || this.canvas.height === 0) return;
     if (!this.ground) this.ground = document.createElement('canvas');
-    this.ground.width = w;
-    this.ground.height = h;
+
+    // Room for the kerb, the street apron and the ambient-occlusion falloff,
+    // all of which are drawn outside the grid itself.
+    const margin = Math.max(this.camera.cw, this.camera.ch);
+    const cssW = this.level.w * this.camera.cw + margin * 2;
+    const cssH = this.level.h * this.camera.ch + margin * 2;
+    const scale = Math.min(this.dpr, Math.sqrt(MAX_GROUND_PX / Math.max(1, cssW * cssH)));
+
+    this.ground.width = Math.max(1, Math.round(cssW * scale));
+    this.ground.height = Math.max(1, Math.round(cssH * scale));
     const gctx = this.ground.getContext('2d');
     if (!gctx) return;
-    gctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
-    gctx.clearRect(0, 0, w, h);
-    drawGround(gctx, this.level, this.camera, this.view.palette);
+    gctx.setTransform(scale, 0, 0, scale, 0, 0);
+    gctx.clearRect(0, 0, cssW, cssH);
+    drawGround(
+      gctx,
+      this.level,
+      { ox: margin, oy: margin, cw: this.camera.cw, ch: this.camera.ch },
+      this.view.palette,
+    );
+
+    this.groundMargin = margin;
+    this.groundW = cssW;
+    this.groundH = cssH;
+    this.bakedCw = this.camera.cw;
     this.groundDirty = false;
   }
 
@@ -1092,7 +1287,7 @@ export class LotView {
     const ctx = this.ctx;
     const cssW = this.canvas.width / this.dpr;
     const cssH = this.canvas.height / this.dpr;
-    if (this.groundDirty) this.bakeGround();
+    if (this.groundDirty || this.bakedCw !== this.camera.cw) this.bakeGround();
 
     ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
     ctx.clearRect(0, 0, cssW, cssH);
@@ -1104,7 +1299,15 @@ export class LotView {
       ctx.translate(-cssW / 2, -cssH / 2);
     }
 
-    if (this.ground) ctx.drawImage(this.ground, 0, 0, cssW, cssH);
+    if (this.ground) {
+      ctx.drawImage(
+        this.ground,
+        this.camera.ox - this.groundMargin,
+        this.camera.oy - this.groundMargin,
+        this.groundW,
+        this.groundH,
+      );
+    }
     if (this.preview) drawPreview(ctx, this.preview, this.camera, this.view.palette);
 
     const views = this.collectVehicleViews();

@@ -9,7 +9,8 @@
  * Run with: npx vitest run tests/curve.report.ts
  */
 import { describe, it } from 'vitest';
-import { bandForLevel, getLevel, TOTAL_LEVELS } from '../src/core/campaign';
+import { bandForLevel, getLevel, specForLevel, TOTAL_LEVELS } from '../src/core/campaign';
+import { auditLevel } from '../src/core/generator';
 import { analyseDifficulty, bumpLikelihood } from '../src/core/solver';
 import { Band } from '../src/core/types';
 
@@ -23,19 +24,28 @@ const BAND_NAME: Record<Band, string> = {
 describe('difficulty curve', () => {
   it('prints the delivered curve', () => {
     const rows: string[] = [];
-    rows.push('  lvl  band       grid   cars  depth  mods  bump');
+    rows.push('  lvl  band       grid  cells  cars  depth  moves  open  neck  indep  dens  rep  mods  bump  misses');
     const show = (i: number) => {
       const level = getLevel(i);
       const m = analyseDifficulty(level);
+      const audit = auditLevel(level, specForLevel(i).difficulty);
       rows.push(
         [
           String(i).padStart(5),
           BAND_NAME[level.band].padEnd(10),
           `${level.w}x${level.h}`.padStart(6),
+          String(level.w * level.h).padStart(5),
           String(level.vehicles.length).padStart(5),
           String(m.knotDepth).padStart(6),
+          String(audit.parSlides).padStart(6),
+          String(m.openExits).padStart(5),
+          String(m.bottlenecks).padStart(5),
+          m.independentRatio.toFixed(2).padStart(6),
+          m.density.toFixed(2).padStart(5),
+          String(audit.repositions).padStart(4),
           String(level.modifierLoad).padStart(5),
           bumpLikelihood(level).toFixed(2).padStart(6),
+          '  ' + audit.shortfalls.map((s) => s.code).join(','),
         ].join(' '),
       );
     };

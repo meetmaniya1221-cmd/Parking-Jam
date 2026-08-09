@@ -94,6 +94,15 @@ const DEAD_END_INLINE_LIMIT = 12;
 const SAVE_ME_MOVES = 3;
 const SAVE_ME_PRICE = 15;
 
+/**
+ * Shown once a session, the first time a lot is too big to show at once.
+ *
+ * Late lots outgrow a phone screen, so they pan — and a control the player has
+ * not met yet needs saying once. Once, though: it is a single sentence about
+ * dragging, not a mode the game needs to teach.
+ */
+let bigLotHintShown = false;
+
 export class PlayScreen {
   readonly root: HTMLElement;
   private readonly canvas: HTMLCanvasElement;
@@ -306,8 +315,21 @@ export class PlayScreen {
     this.startAmbulanceWindow();
     this.scheduleCoach();
     this.announcePattern();
+    this.announceBigLot();
     this.tickTimer = window.setInterval(() => this.tick(), 250);
     if (this.mode === 'campaign') prefetchLevel(this.levelIndex + 1);
+  }
+
+  /** One line, the first time a jam is larger than the screen it is played on. */
+  private announceBigLot(): void {
+    if (bigLotHintShown || !this.view?.canPan) return;
+    if (patternIntroducedAt(this.levelIndex)) return; // never two coach lines at once
+    bigLotHintShown = true;
+    this.coachNode.hidden = false;
+    this.coachNode.textContent = 'Big lot — drag the asphalt to look round, double-tap to fit.';
+    window.setTimeout(() => {
+      if (this.levelIndex > TUTORIAL_LEVELS) this.coachNode.hidden = true;
+    }, 5200);
   }
 
   unmount(): void {

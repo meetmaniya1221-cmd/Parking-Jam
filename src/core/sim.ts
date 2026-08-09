@@ -124,6 +124,37 @@ export function exitIndexAt(level: LevelDef, x: number, y: number, dir: Dir): nu
   return -1;
 }
 
+/**
+ * Curb cuts as a per-cell direction bitmask, built once per LevelDef.
+ *
+ * A frontage on all four sides of a 12×15 lot is ~50 curb cuts, and `probe` asks
+ * "is there one here?" every time a ray reaches the border — which the solver
+ * does tens of thousands of times per generated level. A linear scan over the
+ * exit list made that the hottest loop in generation; this makes it O(1).
+ *
+ * Keyed weakly on the level object, so a level rebuilt by `overrideLevel`
+ * (Green Wave, Grip Tires) simply gets a fresh mask.
+ */
+const exitMasks = new WeakMap<LevelDef, Uint8Array>();
+
+export function exitMaskFor(level: LevelDef): Uint8Array {
+  let mask = exitMasks.get(level);
+  if (mask) return mask;
+  mask = new Uint8Array(level.w * level.h);
+  for (const e of level.exits) {
+    if (e.x < 0 || e.y < 0 || e.x >= level.w || e.y >= level.h) continue;
+    mask[e.y * level.w + e.x] |= 1 << e.dir;
+  }
+  exitMasks.set(level, mask);
+  return mask;
+}
+
+/** True when cell (x,y) has a curb cut on side `dir`. */
+export function hasExitAt(level: LevelDef, x: number, y: number, dir: Dir): boolean {
+  if (x < 0 || y < 0 || x >= level.w || y >= level.h) return false;
+  return (exitMaskFor(level)[y * level.w + x] & (1 << dir)) !== 0;
+}
+
 /** Nose cell when travelling `dir`; the tail leads when reversing. */
 export function leadCell(s: LotState, vi: number, dir: Dir): { x: number; y: number } {
   const f = s.facing[vi] as Dir;
@@ -176,7 +207,7 @@ export function probe(s: LotState, vi: number, dir: Dir): Probe {
       // Reaching the border: the previous cell may hold a curb cut.
       const px = lead.x + dx * (k - 1);
       const py = lead.y + dy * (k - 1);
-      const hasCurbCut = forward && exitIndexAt(level, px, py, dir) >= 0;
+      const hasCurbCut = forward && hasExitAt(level, px, py, dir);
       if (hasCurbCut) {
         if (exitPermitted(s, vi)) return { dist, exitDist: k - 1, block: NO_BLOCK };
         return {

@@ -7,6 +7,7 @@
  * whole sequence is remote-config-shaped — every number here is a tunable.
  */
 
+import { DifficultyConfig, difficultyFor } from './difficulty';
 import { generateLevel, LevelSpec, ModifierSpec, NO_MODIFIERS } from './generator';
 import { hashString } from './rng';
 import { Band, LevelDef } from './types';
@@ -222,95 +223,6 @@ export function isUnlocked(gate: GateKey, highestLevelReached: number): boolean 
  * Difficulty vector
  * ------------------------------------------------------------------ */
 
-function lerp(a: number, b: number, t: number): number {
-  return a + (b - a) * Math.max(0, Math.min(1, t));
-}
-
-interface Dimensions {
-  w: number;
-  h: number;
-}
-
-/**
- * The lot has to be big enough to hold the knot being asked of it.
- *
- * Depth past four links needs a chain that turns corners, and a corner needs a
- * crossing lane with its own curb cut — so grid size is not decoration, it is
- * the ceiling on every other difficulty lever. It grows fast to clear the way
- * for the level-10 step up, then settles: past 7×10 the cells get too small to
- * touch comfortably on a phone.
- */
-function gridForLevel(index: number, band: Band): Dimensions {
-  let w: number;
-  let h: number;
-  if (index <= 4) [w, h] = [5, 6];
-  else if (index < RAMP_ENDS) [w, h] = [6, 7];
-  else if (index <= 24) [w, h] = [7, 9];
-  else [w, h] = [7, 10];
-
-  if (band === Band.Showcase) {
-    w = Math.min(8, w + 1);
-    h = Math.min(10, h + 1);
-  } else if (band === Band.Easy && index >= RAMP_ENDS) {
-    // Breathers are wide and shallow: many exits, little thinking (GDD §6).
-    h = Math.max(6, h - 1);
-  }
-  return { w, h };
-}
-
-function vehicleCountFor(index: number, band: Band, dims: Dimensions): number {
-  let base: number;
-  if (index < RAMP_ENDS) base = lerp(4, 8, (index - 1) / (RAMP_ENDS - 2));
-  else if (index <= 30) base = lerp(12, 15, (index - RAMP_ENDS) / 20);
-  else if (index <= 120) base = lerp(15, 19, (index - 30) / 90);
-  else base = lerp(19, 22, (index - 120) / 200);
-
-  const bandAdjust =
-    band === Band.Easy ? -1 : band === Band.Hard ? 2 : band === Band.Showcase ? 3 : 0;
-  // Breathers carry MORE cars but a shallower knot — pure goal-gradient candy.
-  const breatherBonus = band === Band.Easy && index >= RAMP_ENDS ? 3 : 0;
-
-  const capacity = Math.floor((dims.w * dims.h) / 3.2);
-  return Math.max(3, Math.min(capacity, Math.round(base) + bandAdjust + breatherBonus));
-}
-
-/**
- * A lot only holds as many cars as it has usable lanes, so a deliberately
- * constrained frontage has to ask for fewer. Keeping the spec honest matters:
- * an unreachable target would silently degrade every other tuning signal.
- */
-function densityFactor(street: Street): number {
-  return Math.min(1, 0.45 + street.sides * 0.1 + street.width * 0.3);
-}
-
-function knotDepthFor(index: number, band: Band, vehicles: number): number {
-  // Calibrated against what the lot geometry can actually hold: a chain has to
-  // turn corners to grow past four links, and each turn needs a curb cut on the
-  // crossing lane. Measured ceiling is ~10, comfortable band 5–8.
-  let base: number;
-  if (index < RAMP_ENDS) base = lerp(2, 4.5, (index - 1) / (RAMP_ENDS - 2));
-  else if (index <= 30) base = lerp(6, 7, (index - RAMP_ENDS) / 20);
-  else if (index <= 120) base = lerp(7, 8, (index - 30) / 90);
-  else base = lerp(8, 9, (index - 120) / 200);
-
-  const bandAdjust =
-    band === Band.Easy ? -1.5 : band === Band.Hard ? 1 : band === Band.Showcase ? 1.5 : 0;
-  return Math.max(2, Math.min(vehicles - 1, Math.round(base + bandAdjust)));
-}
-
-function distractorRatioFor(index: number, band: Band): number {
-  const base =
-    index < RAMP_ENDS ? 0.2 : Math.min(0.6, lerp(0.42, 0.6, (index - RAMP_ENDS) / 110));
-  return band === Band.Easy ? Math.min(0.65, base + 0.1) : base;
-}
-
-function lengthMixFor(index: number): Record<number, number> {
-  if (index < 5) return { 2: 1 };
-  if (index < GATES.trailers) return { 2: 6, 3: 2 };
-  if (index <= 24) return { 2: 6, 3: 3, 4: 1 };
-  return { 2: 5, 3: 3, 4: 2 };
-}
-
 interface Street {
   sides: number;
   width: number;
@@ -326,18 +238,74 @@ interface Street {
  * can turn corners, and the lot both packs denser and knots deeper. Difficulty
  * therefore lives in density, distractors and vocabulary; frontage width is a
  * *simplicity* lever, reserved for the opening levels and for the Plug read.
+ *
+ * A big lot also *needs* the frontage: thirty-four cars on twelve columns only
+ * fit if there are lanes out on every side, so the four-sided default is a
+ * capacity requirement as much as a difficulty one.
  */
 function streetFor(index: number, band: Band, pattern: string): Street {
-  if (pattern === 'plug') return { sides: 2, width: 0.5 };
-  if (pattern === 'twoDoor') return { sides: 2, width: 0.6 };
-  if (index <= 4) return { sides: 1, width: 1 };
-  if (index < RAMP_ENDS) return { sides: 2, width: 1 };
-  if (band === Band.Easy) return { sides: 3, width: 1 };
-  if (band === Band.Hard) return { sides: 4, width: 0.8 };
-  if (band === Band.Showcase) return { sides: 4, width: 0.9 };
-  // Standard jams now front onto four streets too. Crossing lanes are what let
-  // a dependency chain turn a corner, and past level 10 every lot needs that.
-  return { sides: 4, width: 0.85 };
+  // The Plug and the Two-Door are frontage reads: one lane out, or two flows
+  // competing for it. On a small lot that is the whole puzzle. On a 12×15 one
+  // it stops being a read and becomes an amputation — a lot with only two
+  // facings usable cannot chain deep, cannot pack, and half of it goes to
+  // waste — so past the on-ramp they keep their pinch but not their blindfold.
+  if (pattern === 'plug') return index < RAMP_ENDS ? { sides: 2, width: 0.5 } : { sides: 3, width: 0.5 };
+  if (pattern === 'twoDoor') return index < RAMP_ENDS ? { sides: 2, width: 0.6 } : { sides: 3, width: 0.55 };
+  if (index <= 2) return { sides: 2, width: 1 };
+  if (index <= 5) return { sides: 3, width: 1 };
+  if (index < RAMP_ENDS) return { sides: 3, width: 0.9 };
+  // Four sides everywhere past the on-ramp — crossing lanes are what let a
+  // chain turn a corner, and a thirty-car lot needs them to empty at all. The
+  // band shows up in how *much* of each edge is curb cut, which is the lever
+  // that actually decides how many cars can drive off on turn one.
+  if (band === Band.Easy) return { sides: 4, width: 1 };
+  if (band === Band.Hard) return { sides: 4, width: 0.7 };
+  if (band === Band.Showcase) return { sides: 4, width: 0.72 };
+  return { sides: 4, width: 0.9 };
+}
+
+/**
+ * A deliberately pinched frontage really does hold fewer cars: a car can only
+ * park somewhere it could have driven out of, so every curb cut the lot does
+ * not have is lanes' worth of capacity it does not have either.
+ */
+function frontageFactor(street: Street): number {
+  return Math.max(0.7, Math.min(1, 0.55 + street.sides * 0.08 + street.width * 0.25));
+}
+
+/**
+ * Re-scale the contract for a pinched frontage, keeping it honest.
+ *
+ * Two things give here. Capacity, because a lot with one lane out really does
+ * hold fewer cars — and the forced temporary move, because the deadlock that
+ * causes it is a ring of four cars each leaving by a different side. With only
+ * two sides open there is no such ring to build, and demanding one would just
+ * make every candidate fail and ship the near-miss anyway.
+ */
+function withFrontage(config: DifficultyConfig, street: Street): DifficultyConfig {
+  const factor = frontageFactor(street);
+  const temporaryMoveRequirement = config.temporaryMoveRequirement && street.sides >= 4;
+  // A chain of cars only turns a corner where a crossing lane has its own curb
+  // cut, so a lot fronting onto fewer streets has a hard geometric ceiling on
+  // how deep its knot can go — roughly one link per two cells of its longest
+  // queue. Asking past that would fail every candidate and ship the near-miss.
+  const depthCeiling =
+    street.sides >= 4
+      ? config.minDependencyDepth
+      : Math.max(3, Math.floor(Math.max(config.boardWidth, config.boardHeight) / 2) + street.sides);
+  const targetCars = Math.max(3, Math.round(config.targetCars * factor));
+  const minCars = Math.max(3, Math.round(config.minCars * factor));
+  return {
+    ...config,
+    targetCars,
+    minCars,
+    temporaryMoveRequirement,
+    minDependencyDepth: Math.min(config.minDependencyDepth, depthCeiling, targetCars - 1),
+    minSolutionMoves: minCars + (temporaryMoveRequirement ? 1 : 0),
+    maxInitialFreeCars: Math.max(2, Math.round(config.maxInitialFreeCars * factor)),
+    minInitialFreeCars: Math.max(1, Math.round(config.minInitialFreeCars * factor)),
+    minDensity: config.minDensity * factor,
+  };
 }
 
 /**
@@ -349,6 +317,39 @@ function streetFor(index: number, band: Band, pattern: string): Street {
  * rail the compressed curve genuinely trades against — a mechanic still gets a
  * clean lot to be introduced on, just not a long one.
  */
+/**
+ * Furniture counts are a *share* of the lot, but a share with a ceiling.
+ *
+ * Six per cent of a 5×6 lot is two oil slicks and reads as a feature; six per
+ * cent of a 12×15 lot is eleven, and eleven of anything stops being a feature
+ * and starts being terrain. Worse, every blocker is a cell the generator cannot
+ * park a car on, so an uncapped share would quietly eat the density the whole
+ * curve is built on.
+ */
+function furniture(cells: number, share: number, floor: number, ceiling: number): number {
+  return Math.max(floor, Math.min(ceiling, Math.round(cells * share)));
+}
+
+interface Dimensions {
+  w: number;
+  h: number;
+}
+
+/**
+ * How many VIPs the rope holds back.
+ *
+ * While a VIP is on the lot nobody else may leave, so the number of VIPs *is*
+ * the number of legal opening moves. One is a clean read on a small lot and a
+ * near-lockout on a thirty-car one, where the player would be hunting a single
+ * legal move among thirty — so a big lot ropes off a small group instead.
+ */
+function ropeCount(cells: number, band: Band): number {
+  const base = cells >= 160 ? 3 : cells >= 110 ? 2 : 1;
+  // A stretch jam ropes off a smaller group, because the rope's whole effect is
+  // on the opening move and that is precisely where a stretch jam should bite.
+  return band === Band.Hard || band === Band.Showcase ? Math.max(1, base - 1) : base;
+}
+
 function modifiersFor(index: number, band: Band, pattern: string, dims: Dimensions): ModifierSpec {
   const cells = dims.w * dims.h;
   const m: ModifierSpec = { ...NO_MODIFIERS };
@@ -361,13 +362,13 @@ function modifiersFor(index: number, band: Band, pattern: string, dims: Dimensio
   const families: Array<() => void> = [];
 
   if (pattern === 'slickCorridor' && index >= GATES.oil) {
-    families.push(() => (m.oil = Math.max(2, Math.round(cells * 0.06))));
+    families.push(() => (m.oil = furniture(cells, 0.06, 2, 8)));
   }
   if (pattern === 'velvetRope' && index >= GATES.vips) {
-    families.push(() => (m.vips = 1));
+    families.push(() => (m.vips = ropeCount(cells, band)));
   }
   if (pattern === 'carousel' && index >= GATES.roundabouts) {
-    families.push(() => (m.roundabouts = Math.max(1, Math.round(cells * 0.03))));
+    families.push(() => (m.roundabouts = furniture(cells, 0.03, 1, 4)));
   }
   if (pattern === 'borderCrossing' && index >= GATES.gates) {
     families.push(() => (m.gate = true));
@@ -377,16 +378,20 @@ function modifiersFor(index: number, band: Band, pattern: string, dims: Dimensio
   if (index >= GATES.blockers) {
     secondary.push(() => {
       const density = band === Band.Easy ? 0.03 : band === Band.Hard ? 0.08 : 0.05;
-      m.blockers = Math.max(1, Math.round(cells * density));
+      m.blockers = furniture(cells, density, 1, 9);
     });
   }
   if (index >= GATES.oneWays) {
-    secondary.push(() => (m.arrows = Math.max(1, Math.round(cells * 0.03))));
+    secondary.push(() => (m.arrows = furniture(cells, 0.03, 1, 6)));
   }
   if (index >= GATES.oil) {
-    secondary.push(() => (m.oil = Math.max(1, Math.round(cells * 0.04))));
+    secondary.push(() => (m.oil = furniture(cells, 0.04, 1, 6)));
   }
-  if (index >= GATES.vips) secondary.push(() => (m.vips = 1));
+  // Never on a breather: the rope is the one mechanic that shuts a lot
+  // completely, and a rest beat the player cannot open is not a rest beat.
+  if (index >= GATES.vips && band !== Band.Easy) {
+    secondary.push(() => (m.vips = ropeCount(cells, band)));
+  }
   if (index >= GATES.roundabouts) secondary.push(() => (m.roundabouts = 1));
 
   const chosen = families.slice(0, cap);
@@ -441,45 +446,103 @@ export function meteredLimit(index: number, parSlides: number): number | null {
  * Specs
  * ------------------------------------------------------------------ */
 
-/** Hand-authored openings — the first three minutes are too important to generate. */
-const TUTORIAL_SPECS: Record<number, Partial<LevelSpec>> = {
-  1: { w: 4, h: 5, vehicleCount: 4, knotDepth: 2, streetSides: 1, streetWidth: 1, distractorRatio: 0 },
-  2: { w: 5, h: 5, vehicleCount: 5, knotDepth: 3, streetSides: 1, streetWidth: 1, distractorRatio: 0 },
-  3: { w: 5, h: 6, vehicleCount: 6, knotDepth: 3, streetSides: 2, streetWidth: 0.8, distractorRatio: 0.15 },
-};
+interface SpecRequest {
+  id: string;
+  /** Identity inside the sim; event jams sit above the campaign range. */
+  index: number;
+  seed: number;
+  band: Band;
+  patternTags: string[];
+  /** Level the difficulty curve is sampled at — an event jam borrows a rung of it. */
+  curveIndex: number;
+  /** Level the modifier schedule is read at, so an event jam can carry late vocabulary. */
+  modifierIndex?: number;
+  pattern: string;
+}
 
-export function specForLevel(index: number): LevelSpec {
-  const band = bandForLevel(index);
-  const pattern = patternForLevel(index);
-  const dims = gridForLevel(index, band);
-  const street = streetFor(index, band, pattern.tag);
-  const vehicleCount = Math.max(
-    3,
-    Math.round(vehicleCountFor(index, band, dims) * densityFactor(street)),
-  );
-  const spec: LevelSpec = {
-    id: `L${index}`,
-    index,
-    seed: hashString(`gridlock:v1:L${index}`),
-    band,
-    patternTags: [pattern.tag],
+/**
+ * Assemble a spec from the curve. Every jam in the game — campaign, daily,
+ * Overtime, Gauntlet — comes through here, so they all scale together and no
+ * mode can quietly drift onto its own private board size.
+ */
+function buildSpec(req: SpecRequest): LevelSpec {
+  const street = streetFor(req.curveIndex, req.band, req.pattern);
+  let difficulty = withFrontage(difficultyFor(req.curveIndex, req.band), street);
+  const dims = { w: difficulty.boardWidth, h: difficulty.boardHeight };
+  const modifiers = modifiersFor(req.modifierIndex ?? req.curveIndex, req.band, req.pattern, dims);
+
+  // The Velvet Rope *is* a closed opening: while a VIP is on the lot nobody
+  // else may leave, so a roped lot opens with exactly as many legal moves as it
+  // has VIPs, by design. Asking it for more would be asking it not to be roped.
+  if (modifiers.vips > 0) {
+    difficulty = {
+      ...difficulty,
+      minInitialFreeCars: Math.min(difficulty.minInitialFreeCars, modifiers.vips),
+    };
+  }
+
+  return {
+    id: req.id,
+    index: req.index,
+    seed: req.seed,
+    band: req.band,
+    patternTags: req.patternTags,
     w: dims.w,
     h: dims.h,
     streetSides: street.sides,
     streetWidth: street.width,
-    vehicleCount,
-    knotDepth: knotDepthFor(index, band, vehicleCount),
-    distractorRatio: distractorRatioFor(index, band),
-    lengthMix: lengthMixFor(index),
-    modifiers: modifiersFor(index, band, pattern.tag, dims),
+    vehicleCount: difficulty.targetCars,
+    knotDepth: difficulty.minDependencyDepth,
+    distractorRatio: difficulty.distractorRatio,
+    lengthMix: difficulty.lengthMix,
+    modifiers,
+    difficulty,
   };
+}
 
-  const override = TUTORIAL_SPECS[index];
-  if (override) {
-    Object.assign(spec, override, { modifiers: { ...NO_MODIFIERS }, lengthMix: { 2: 1 } });
-    spec.patternTags = ['tutorial'];
-  }
-  return spec;
+/**
+ * The first three minutes are too important to leave entirely to the dice.
+ *
+ * These lots are still generated — hand-placing them would fossilise them — but
+ * against a contract with every sharp edge filed off: no vocabulary, no long
+ * vehicles, no distractors, a wide-open frontage and a knot barely worth the
+ * name. What the player should take from level one is the verb, not a lesson in
+ * humility.
+ */
+function tutorialSpec(index: number, spec: LevelSpec): LevelSpec {
+  const difficulty: DifficultyConfig = {
+    ...spec.difficulty,
+    minDependencyDepth: Math.min(spec.difficulty.minDependencyDepth, index + 1),
+    distractorRatio: 0,
+    minBottlenecks: 0,
+    maxIndependentRatio: 1,
+    temporaryMoveRequirement: false,
+    lengthMix: { 2: 1 },
+  };
+  return {
+    ...spec,
+    patternTags: ['tutorial'],
+    knotDepth: difficulty.minDependencyDepth,
+    distractorRatio: 0,
+    lengthMix: { 2: 1 },
+    modifiers: { ...NO_MODIFIERS },
+    difficulty,
+  };
+}
+
+export function specForLevel(index: number): LevelSpec {
+  const band = bandForLevel(index);
+  const pattern = patternForLevel(index);
+  const spec = buildSpec({
+    id: `L${index}`,
+    index,
+    seed: hashString(`gridlock:v2:L${index}`),
+    band,
+    patternTags: [pattern.tag],
+    curveIndex: index,
+    pattern: pattern.tag,
+  });
+  return index <= 3 ? tutorialSpec(index, spec) : spec;
 }
 
 const levelCache = new Map<number, LevelDef>();
@@ -527,24 +590,18 @@ export function overtimeSet(dayNumber: number, count = 10): OvertimeJam[] {
     const seed = hashString(`overtime:${dayNumber}:${i}`);
     const pattern = pool[seed % pool.length];
     const band = i < 3 ? Band.Easy : i < 8 ? Band.Medium : Band.Hard;
-    const dims = { w: 7, h: 9 };
-    const vehicleCount = vehicleCountFor(120 + i * 6, band, dims);
-    const spec: LevelSpec = {
+    // The set climbs across the day's ten jams, from a district-two lot to a
+    // full-size one.
+    const spec = buildSpec({
       id: `OT-${dayNumber}-${i}`,
       index: 1000 + i,
       seed,
       band,
       patternTags: [pattern.tag, 'overtime'],
-      w: dims.w,
-      h: dims.h,
-      streetSides: band === Band.Hard ? 4 : 3,
-      streetWidth: 0.85,
-      vehicleCount,
-      knotDepth: knotDepthFor(120 + i * 6, band, vehicleCount),
-      distractorRatio: 0.45,
-      lengthMix: { 2: 5, 3: 3, 4: 2, 5: 1 },
-      modifiers: modifiersFor(120 + i * 6, band, pattern.tag, dims),
-    };
+      curveIndex: 12 + i * 2,
+      modifierIndex: 120 + i * 6,
+      pattern: pattern.tag,
+    });
     out.push({ level: generateLevel(spec), tag: pattern.label });
   }
   return out;
@@ -554,24 +611,20 @@ export function overtimeSet(dayNumber: number, count = 10): OvertimeJam[] {
 export function rushHourJam(dayNumber: number): LevelDef {
   const seed = hashString(`rush:${dayNumber}`);
   const pattern = PATTERNS[seed % PATTERNS.length];
-  const dims = { w: 7, h: 9 };
-  const spec: LevelSpec = {
-    id: `RH-${dayNumber}`,
-    index: 900,
-    seed,
-    band: Band.Hard,
-    patternTags: [pattern.tag, 'rushHour'],
-    w: dims.w,
-    h: dims.h,
-    streetSides: 4,
-    streetWidth: 0.8,
-    vehicleCount: 16,
-    knotDepth: 8,
-    distractorRatio: 0.45,
-    lengthMix: { 2: 5, 3: 3, 4: 2 },
-    modifiers: modifiersFor(140, Band.Hard, pattern.tag, dims),
-  };
-  return generateLevel(spec);
+  // The daily is meant to be the hardest thing on offer, so it is built at the
+  // top of the curve regardless of how far the player has actually got.
+  return generateLevel(
+    buildSpec({
+      id: `RH-${dayNumber}`,
+      index: 900,
+      seed,
+      band: Band.Hard,
+      patternTags: [pattern.tag, 'rushHour'],
+      curveIndex: 22,
+      modifierIndex: 140,
+      pattern: pattern.tag,
+    }),
+  );
 }
 
 /* ------------------------------------------------------------------ *
@@ -598,25 +651,21 @@ export function gauntletJam(period: string, index: number): LevelDef {
   const seed = hashString(`gauntlet:${period}:${rung}`);
   const pattern = PATTERNS[seed % PATTERNS.length];
   const band = rung < 3 ? Band.Medium : rung < 9 ? Band.Hard : Band.Showcase;
-  const dims = { w: rung < 4 ? 6 : 7, h: rung < 4 ? 8 : rung < 9 ? 9 : 10 };
-  const vehicleCount = Math.round(lerp(9, 21, rung / (GAUNTLET_LENGTH - 1)));
-  const spec: LevelSpec = {
-    id: `GG-${period}-${rung}`,
-    index: 950 + rung,
-    seed,
-    band,
-    patternTags: [pattern.tag, 'gauntlet'],
-    w: dims.w,
-    h: dims.h,
-    streetSides: rung < 6 ? 3 : 4,
-    streetWidth: 0.8,
-    vehicleCount,
-    knotDepth: Math.round(lerp(4, 9, rung / (GAUNTLET_LENGTH - 1))),
-    distractorRatio: 0.45,
-    lengthMix: rung < 4 ? { 2: 6, 3: 2 } : { 2: 5, 3: 3, 4: 2 },
-    modifiers: modifiersFor(60 + rung * 12, band, pattern.tag, dims),
-  };
-  return generateLevel(spec);
+  // Twelve rungs walk the whole curve, from a district-one lot to bigger than
+  // anything in the campaign — one continuous path you either walk or you do not.
+  const curveIndex = Math.round(8 + (rung * 16) / (GAUNTLET_LENGTH - 1));
+  return generateLevel(
+    buildSpec({
+      id: `GG-${period}-${rung}`,
+      index: 950 + rung,
+      seed,
+      band,
+      patternTags: [pattern.tag, 'gauntlet'],
+      curveIndex,
+      modifierIndex: 60 + rung * 12,
+      pattern: pattern.tag,
+    }),
+  );
 }
 
 export function gauntletRungLabel(index: number): string {

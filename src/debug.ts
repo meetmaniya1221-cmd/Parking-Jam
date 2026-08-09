@@ -8,6 +8,7 @@
 
 import { meteredLimit, getLevel, PATTERNS } from './core/campaign';
 import { exitableVehicles, probe, resolveMove } from './core/sim';
+import { nextMoveHint } from './core/solver';
 import { Dir } from './core/types';
 import { Settings } from './meta/save';
 import { LotView } from './view/lotView';
@@ -28,6 +29,15 @@ export interface GridlockDebug {
   meteredLimitFor(index: number): number | null;
   /** Burn one slide on a move that clears nothing. False when none is left. */
   wasteAMove(): boolean;
+  /**
+   * Play the solver's next move, whatever kind it is.
+   *
+   * A harness that only taps cars can clear most of the game, but not a lot
+   * built around a deadlock ring — those need a car pulled temporarily aside,
+   * and a bot that cannot do that would report a solvable jam as a dead end.
+   * Returns false only when the lot genuinely cannot be cleared from here.
+   */
+  playBestMove(): boolean;
   /** Vehicles the Dispatcher Call is currently highlighting. */
   hintedVehicles(): number[];
   /**
@@ -99,6 +109,14 @@ const handle: GridlockDebug = {
       }
     }
     return false;
+  },
+  playBestMove(): boolean {
+    const view = handle.lotView;
+    if (!view) return false;
+    const move = nextMoveHint(view.state);
+    if (!move) return false;
+    view.applyDebugMove(move);
+    return true;
   },
   version: '1.0.0',
 };

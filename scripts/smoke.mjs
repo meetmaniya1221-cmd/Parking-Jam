@@ -111,18 +111,30 @@ async function dismissAd(page) {
   }
 }
 
-/** Clear the current lot by repeatedly tapping whatever can leave. */
+/**
+ * Clear the current lot by repeatedly tapping whatever can leave.
+ *
+ * When nothing can, the lot is not necessarily stuck: late jams are built
+ * around a deadlock ring that has to be opened by reversing a car out of the
+ * way first. Fall through to the solver's own next move for those, and only
+ * call it a dead end when the solver has nothing either.
+ */
 async function clearLot(page, label) {
-  for (let guard = 0; guard < 80; guard++) {
+  for (let guard = 0; guard < 120; guard++) {
     const state = await lotState(page);
     if (!state || state.remaining === 0) return state;
     const exitable = await page.evaluate(() => window.__gridlock.exitable());
-    if (exitable.length === 0) {
+    if (exitable.length > 0) {
+      await tapVehicle(page, exitable[0]);
+      await page.waitForTimeout(200);
+      continue;
+    }
+    const moved = await page.evaluate(() => window.__gridlock.playBestMove());
+    if (!moved) {
       problems.push(`${label}: dead end with ${state.remaining} cars left`);
       return state;
     }
-    await tapVehicle(page, exitable[0]);
-    await page.waitForTimeout(200);
+    await page.waitForTimeout(220);
   }
   problems.push(`${label}: ran out of taps before clearing`);
   return lotState(page);
