@@ -39,51 +39,57 @@ The sim is the interesting constraint: because `sim.ts` is a pure function of `(
 
 It also measures difficulty. Knot depth is the longest chain in the *precedence DAG*: a car only leaves along its facing, so every car standing on that ray must go first — an absolute ordering, independent of which valid solution the player picks.
 
-**`generator.ts` (JamForge)** builds lots **backwards**. Vehicles are inserted one at a time, and an insertion is only accepted if that car could drive straight off the lot given everything already placed. Replaying the insertions in reverse is therefore always a valid solution, which makes every generated jam solvable by construction — the promise the design document makes to the player, kept structurally rather than by testing after the fact.
+**`generator.ts` (JamForge)** builds lots **backwards**, by inverse moves from an empty lot. *Un-exit* parks a car where it could drive straight off and records that exit as the next-latest move. *Un-slide* hauls a car already on the lot back along its lane and records the shunt. The construction therefore *is* a solution, replayed in reverse: every generated jam is solvable by algorithm rather than by hoping a search confirms it afterwards.
 
-Knot depth is *authored*, not hoped for. Each candidate placement is scored by the chain depth it would actually create, computed from a per-car "how deep is the knot above this car" pass. Chasing a single chain tail stalls at three or four links, because each link starts closer to the street than the one it blocks; scoring every placement by its real contribution does not.
+**`campaign.ts`** describes 320 launch jams rather than storing them. A global level index determines band, pattern, grid size, car count and modifier load, plus a full difficulty vector — knot depth, minimum solution length, opening width, bottleneck count, how many shunts the line must contain, and how much of the lot must survive the tapping bot. JamForge turns that into the same lot on every device, every time. The whole sequence costs zero bundle bytes and every number in it is a tunable.
 
-**`campaign.ts`** describes 320 launch jams rather than storing them. A global level index determines band, pattern, grid size, car count, knot depth, distractor ratio, street frontage and modifier load; JamForge turns that into the same lot on every device, every time. The whole sequence costs zero bundle bytes and every number in it is a tunable.
+### The thing that made the old jams easy
+
+Cars only ever *leave* this lot. Nothing is added, so removing a car strictly frees cells, and every move legal before an exit is still legal after it. Two things follow, and they turned out to be the whole story:
+
+- **Taking a free exit is never a mistake.** Delete a car's moves from any optimal line and what remains is still legal.
+- So **a lot that can be cleared by exits alone can be cleared by tapping cars in any order at all.** There is nothing to get wrong.
+
+The old generator only ever placed cars that could drive straight off, which made every lot exactly that kind of lot. Measured on the shipped campaign: the bot that repeatedly taps whatever car happens to be free cleared **100% of all 320 jams**, whatever their car count, blocker density or knot depth. Difficulty was a spot-the-open-lane exercise wearing a puzzle's clothes.
+
+The fix is not more cars. It is the **cycle**: car A parked across car E's lane while E is parked across A's. Neither can leave, no ordering saves it, and the knot opens only when somebody is shunted sideways — a move that gets that car no closer to its own exit and exists purely to make room. That move is the one thing a player can get wrong, so it is the only place difficulty can live.
+
+Three consequences fell out of it, each one a constraint the old design had backwards:
+
+1. **A lot needs all four edges open before a loop is possible at all.** With curb cuts on only two edges, give every car its remaining distance to the streets that exist: standing in someone's way always means standing *ahead* of them, so every arrow in the dependency graph points from a smaller number to a larger one. No loop can exist, so something can always leave. A third edge does not fix it — the same argument runs on the remaining axis. Narrow frontage is now the *simplicity* lever it always secretly was.
+2. **Density past about half the lot removes the puzzle.** A car needs an empty cell in its own lane before it can be shunted anywhere. The old lots ran at three-quarters full, where nothing can reposition. Car counts came down by roughly a fifth.
+3. **Cars that block nobody are furniture, not distractors.** They come off in one tap and the lot is exactly as it was, so they are pruned outright rather than tolerated. Every shipped jam now has zero of them.
+
+Generation is **generate → replay-verify → measure → judge → regenerate**, and the judging happens twice: once on the constructed line, which is free, and again on the shortest line the solver can find, for the candidates still in contention. That second pass matters more than it sounds. Knots that share cars come undone together, so a lot built with six interlocks can still have a one-shunt solution — only the post-solve number says what the player cannot avoid.
 
 ### The curve: a ten-level on-ramp, then it bites
 
-Levels 1–3 teach the verb, 4–9 add vocabulary at a standard difficulty, and **level 10 is where the game stops being gentle** — a stretch jam on a 7×9 lot, fourteen cars, a knot nine deep. It is a step rather than a slope, and it is meant to be felt.
+Levels 1–3 teach the verb, 4–9 add vocabulary at a standard difficulty, and **level 10 is where the game stops being gentle** — a stretch jam on a 7×9 lot: twelve cars, a knot ten deep, two shunts the solver cannot avoid, and eight of those twelve still standing after every free exit has been taken. It is a step rather than a slope, and it is meant to be felt.
 
-| | L1–9 | L10–20 | L21–40 | L41–80 | L81–160 | L161–320 |
-|---|---|---|---|---|---|---|
-| Cars | 6.0 | 13.1 | 15.6 | 17.0 | 18.6 | 19.2 |
-| Knot depth | 3.6 | 7.3 | 7.2 | 7.4 | 7.8 | 8.2 |
+| Levels 5+ | Breather | Standard | Stretch | Showcase |
+|---|---|---|---|---|
+| Jams | 42 | 93 | 169 | 12 |
+| Cars | 13.6 | 13.8 | 14.3 | 16.5 |
+| Knot depth | 7.9 | 8.0 | 8.0 | 8.9 |
+| Par moves | 14.6 | 15.2 | 15.7 | 18.2 |
+| Shunts the solver cannot avoid | 1.1 | 1.4 | 1.4 | 1.7 |
+| Still standing when tapping runs dry | 44% | 51% | 53% | 67% |
 
-Every lever has to move together, and that is the part worth writing down. Knot depth past four links needs a chain that turns corners; a corner needs a crossing lane with its own curb cut; so the grid and the street frontage are the *ceiling* on depth, not decoration alongside it. Asking a 5×6 lot with two open edges for a knot of nine produces a lot of six, silently. The grid therefore jumps to 7×9 at level 10, standard jams front onto four streets rather than three, and the full puzzle vocabulary — blockers, one-ways, oil, VIPs, ambulances, roundabouts, gates — is open by level 18 instead of level 60. A lot with nothing in it but cars can only be made harder by adding more cars, and that is tedium rather than difficulty.
+Every lever has to move together, and that is the part worth writing down. Knot depth past four links needs a chain that turns corners; a corner needs a crossing lane with its own curb cut; so the grid and the street frontage are the *ceiling* on depth, not decoration alongside it. Asking a 5×6 lot with two open edges for a knot of nine produces a lot of six, silently. The grid therefore jumps to 7×9 at level 10, every lot past the on-ramp fronts onto four streets, and the full puzzle vocabulary — blockers, one-ways, oil, VIPs, ambulances, roundabouts, gates — is open by level 18 instead of level 60.
 
-Stretch is now the default texture of a chapter at 53% rather than its peak at 20%, but breathers survive at 18%. They are rest, not easy: a level-21 breather carries sixteen cars, more than any lot in the old game before level 100. A curve with no let-up in it reads as a wall.
+Stretch is now the default texture of a chapter at 53% rather than its peak at 20%, but breathers survive at 18%. They are rest, not easy — the level-21 breather still holds two fifths of its lot back from tapping and still needs a shunt to open. What makes it a rest is that it shows you four cars ready to drive off, where the stretch jam either side of it shows you one or none. A curve with no let-up in it reads as a wall.
 
-Depth is deliberately *not* asserted to climb monotonically era over era, because an era's mean depth also tracks how many breathers it happens to contain — L10–20 has almost none, later districts run two per district. Measured that way a climb would be measuring band mix. What is asserted is a floor per era, a strictly deeper late game, and density climbing cleanly.
+Depth is deliberately *not* asserted to climb era over era, for two reasons. An era's mean depth tracks how many breathers it happens to contain — L10–20 has almost none, later districts run two apiece — so measured that way a climb would be measuring band mix. And depth genuinely plateaus: a 7×10 lot with a dozen cars tops out around eight or nine links whatever the spec asks for. The late campaign holds that plateau and climbs on the axis that still has room, which is how much repositioning the knot demands.
 
 `npm run test` prints the delivered curve on every run (`tests/curve.report.test.ts`). That readout is not decoration: difficulty here is *requested* by the spec and *delivered* by the generator, and the two are not the same number.
 
 ### A finding worth writing down
 
-The obvious lever for difficulty — narrowing the street frontage — turned out to do the opposite of what it looks like. A car only ever leaves straight along its facing, so a curb cut on a given lane is what makes that lane usable at all. Open one edge and every car must face the same way: the lot is a shallow queue that holds few cars and knots barely three deep. Open four and lanes cross, dependency chains can turn corners, and the same grid packs denser *and* knots deeper.
+Counting how many cars are free on move one is not a difficulty measurement. It looks like one — a jam showing you six open lanes plainly *reads* easier than one showing you a wall — but since taking a free exit is never a mistake, those cars come off the lot whatever their number and whatever order you pick. It measures how a jam looks, not what it asks.
 
-Measured across 120 generated lots on a 7×10 grid:
+What it does measure sits one move later. `greedyClearance` runs the tapping bot to exhaustion and reports what is left standing; that number is the puzzle. On the old campaign it was zero everywhere. It is now a third to a half of the lot, and it is what the bands are graded on.
 
-| Street sides × width | Median cars | Median knot depth | Max depth |
-|---|---|---|---|
-| 2 × 0.45 | 12 | 4 | 7 |
-| 3 × 0.60 | 16 | 5 | 8 |
-| 4 × 0.90 | 16 | 7 | 10 |
-
-So difficulty lives in density, distractors and vocabulary, and frontage width became a *simplicity* lever — reserved for the opening levels and for the deliberately constrained Plug pattern.
-
-The related trap: how open a lot feels on move one has to be scored as a *share* of the cars, not a count. Four free cars out of eight and four out of twenty are nothing alike, and an absolute threshold quietly mis-graded every large lot — including the daily Rush Hour, which was generating at knot depth 3 while advertising itself as the hardest jam of the day. Measured as a share, the bands come out clean:
-
-| Band | Median bump likelihood |
-|---|---|
-| Breather | 0.33 |
-| Standard | 0.50 |
-| Stretch | 0.60 |
-| Showcase | 0.57 |
+The second trap was believing the difficulty knobs were independent. They are not, and three of them are hard gates on whether the lot can be a puzzle at all rather than dials on how hard it is: four open edges (or no loop can exist), roughly half-empty (or nothing can be shunted), and a curb frontage wide enough that the patch served by all four directions is a solid block rather than a sliver. Miss any of them and the generator produces a lot that looks knotted, measures knotted on every static metric, and unties itself the moment a player taps it.
 
 ### `src/view` — the lot you can touch
 
@@ -124,6 +130,8 @@ The campaign is the game; the rest are appointments.
 ## Design commitments that are enforced in code, not just intended
 
 - **Every jam is solvable unaided.** Guaranteed by construction in the generator, and re-verified for all 320 levels on every test run.
+- **No jam falls to reflex.** The tapping bot clears none of the 316 jams past the on-ramp, and `tests/dependency.test.ts` fails the build if a single one starts to.
+- **Every car has a job.** No shipped jam contains a car that blocks nobody and could drive off whenever it liked.
 - **A mistake costs nothing.** Bumps are free and diagnostic. One-way arrows and oil slicks make some slides irreversible, so there is an unlimited **Undo**, and when a lot really has been knotted for good the game notices and says so rather than letting the player grind at it.
 - **A session never ends on a failure.** Running a Metered Lot dry offers the save-me; declining it hands the player a guaranteed-solvable breather, not a loss screen.
 - **Never more than one modal deep.** The win screen does not stack an offer on top of itself; the pinch offer and the interstitial are mutually exclusive, and the smoke test fails the build if two overlays are ever open at once.

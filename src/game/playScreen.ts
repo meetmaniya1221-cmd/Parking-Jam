@@ -20,7 +20,7 @@ import {
   prefetchLevel,
   TOTAL_LEVELS,
 } from '../core/campaign';
-import { hintFrom, isStillSolvable, nextMoveHint } from '../core/solver';
+import { canDeadlock, hintFrom, isStillSolvable, nextMoveHint } from '../core/solver';
 import { Band, BlockReason, LevelDef, Terrain, VehicleTag } from '../core/types';
 import {
   advanceGauntlet,
@@ -613,6 +613,10 @@ export class PlayScreen {
    */
   private scheduleDeadEndCheck(): void {
     if (!this.view || this.finished || this.deadEndWarned) return;
+    // Most lots cannot be ruined at all, and a stretch jam may open with nothing
+    // able to leave *by design* — so without this guard the check would fire on
+    // every reposition, hunting for a dead end that provably is not there.
+    if (!canDeadlock(this.level)) return;
     if (!this.view.nothingCanLeave()) return;
     window.clearTimeout(this.deadEndTimer);
     const run = () => {

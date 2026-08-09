@@ -126,6 +126,16 @@ export interface LevelDef {
   knotDepth: number;
   /** Seed that produced the level, for reproducible regeneration. */
   seed: number;
+  /**
+   * The generator's witness line — a solution it *built*, not one it searched for.
+   *
+   * Every lot is assembled by running the puzzle backwards, so this is a
+   * by-construction proof of solvability, the source of `parSlides`, and the
+   * hint of last resort when the runtime planner runs out of budget.
+   */
+  parSolution?: Move[];
+  /** Slides in `parSolution` that are repositions rather than exits. */
+  repositionMoves?: number;
 }
 
 /** Mutable per-attempt state. Vehicles are stored parallel-array style for cheap cloning. */

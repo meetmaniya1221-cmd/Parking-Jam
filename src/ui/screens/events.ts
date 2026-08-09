@@ -57,10 +57,17 @@ export function createEventsScreen({ store, audio, host }: Deps): Screen {
 
       // Rush Hour
       const jam = rushHourJam(day);
-      const metrics = analyseDifficulty(jam);
+      const metrics = analyseDifficulty(jam, jam.parSolution);
       // No server in this build, so this is an honest estimate from the jam's
-      // own measured shape, not a community figure dressed up as one.
-      const estimate = Math.max(4, Math.round(46 - metrics.knotDepth * 3.5 - metrics.vehicleCount * 0.6));
+      // own measured shape, not a community figure dressed up as one. Weighted
+      // toward what actually stops people: how much of the lot is still there
+      // once tapping runs dry, and how many shunts it takes to release it.
+      const estimate = Math.max(
+        4,
+        Math.round(
+          62 - metrics.greedyStallShare * 55 - metrics.repositionMoves * 6 - metrics.knotDepth * 1.2,
+        ),
+      );
       const played = s.rush.lastAttemptDay === today;
       nodes.push(
         el(
@@ -70,7 +77,7 @@ export function createEventsScreen({ store, audio, host }: Deps): Screen {
           el('h1', { class: 'card__title', text: rushHourName(day) }),
           el('p', {
             class: 'card__body',
-            text: `${jam.vehicles.length} cars · knot depth ${metrics.knotDepth} · estimated ${estimate}% clear it. One attempt.`,
+            text: `${jam.vehicles.length} cars · knot depth ${metrics.knotDepth} · ${metrics.repositionMoves} shunts · estimated ${estimate}% clear it. One attempt.`,
           }),
           played
             ? el('p', { class: 'card__body', text: 'Played today. Back tomorrow at 9.' })

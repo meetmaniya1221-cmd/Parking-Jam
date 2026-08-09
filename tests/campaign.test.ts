@@ -12,7 +12,7 @@ import {
 } from '../src/core/campaign';
 import { auditLevel } from '../src/core/generator';
 import { analyseDifficulty, bumpLikelihood, solveLevel } from '../src/core/solver';
-import { applyMove, createLotState, validateLevel } from '../src/core/sim';
+import { applyMove, createLotState, legalMoves, validateLevel } from '../src/core/sim';
 import { Band, MoveKind, VehicleTag } from '../src/core/types';
 
 describe('chapter layout', () => {
@@ -117,8 +117,14 @@ describe('every shipped jam', () => {
       if (issues.length) failures.push(`L${i}: ${issues.map((x) => x.code).join(',')}`);
       const audit = auditLevel(level);
       if (!audit.solvable) failures.push(`L${i}: unsolvable`);
-      if (audit.parSlides !== level.vehicles.length) {
-        failures.push(`L${i}: par ${audit.parSlides} != ${level.vehicles.length}`);
+      // Par is one move per car plus the repositions the lot demands. It used to
+      // be exactly one per car, because no lot ever demanded any — which is the
+      // thing the generator was rebuilt to stop being true.
+      const repositions = level.repositionMoves ?? 0;
+      if (audit.parSlides !== level.vehicles.length + repositions) {
+        failures.push(
+          `L${i}: par ${audit.parSlides} != ${level.vehicles.length} cars + ${repositions} slides`,
+        );
       }
     }
     expect(failures).toEqual([]);
@@ -134,10 +140,23 @@ describe('every shipped jam', () => {
     }
   }, 180_000);
 
-  it('always leaves at least one car free to move on turn one', () => {
+  it('always leaves at least one legal move on turn one', () => {
+    // Not one legal *exit*: past the on-ramp a stretch jam is allowed to open
+    // with every car boxed in, and that opening — "which of these do I move
+    // first, and where to?" — is the point of it. What is never allowed is a
+    // lot the player cannot touch at all.
     for (const i of indices) {
-      const metrics = analyseDifficulty(getLevel(i));
-      expect(metrics.openExits, `L${i} opens with no legal exit`).toBeGreaterThan(0);
+      const state = createLotState(getLevel(i));
+      expect(legalMoves(state).length, `L${i} opens with nothing to do`).toBeGreaterThan(0);
+    }
+  }, 180_000);
+
+  it('keeps an obvious way in on breathers and the on-ramp', () => {
+    for (const i of indices) {
+      const level = getLevel(i);
+      if (i >= 10 && level.band !== Band.Easy) continue;
+      const metrics = analyseDifficulty(level, level.parSolution);
+      expect(metrics.openExits, `L${i} rest level opens sealed`).toBeGreaterThan(0);
     }
   }, 180_000);
 
@@ -169,7 +188,19 @@ describe('every shipped jam', () => {
     for (const [from, to] of ERAS) {
       expect(depth(from, to), `L${from}-${to} depth`).toBeGreaterThanOrEqual(6.5);
     }
-    expect(depth(161, 320)).toBeGreaterThan(depth(10, 20));
+    // Depth does not climb past the hand-over, and is not asked to. A 7×10 lot
+    // with a dozen cars tops out around eight or nine links whatever the spec
+    // requests, so the late campaign holds that plateau and gets harder on the
+    // axis that still has room — how much repositioning the knot demands, which
+    // `dependency.test.ts` grades band by band. Compared stretch-to-stretch,
+    // because an all-bands mean measures the band mix and nothing else.
+    const stretch = (from: number, to: number, of: (i: number) => number) => {
+      const xs: number[] = [];
+      for (let i = from; i <= to; i++) if (getLevel(i).band === Band.Hard) xs.push(of(i));
+      return xs.reduce((a, b) => a + b, 0) / xs.length;
+    };
+    expect(stretch(161, 320, (i) => getLevel(i).knotDepth)).toBeGreaterThan(7.5);
+    expect(stretch(161, 320, (i) => getLevel(i).repositionMoves ?? 0)).toBeGreaterThan(1);
 
     // Density is the axis that does climb cleanly, era over era.
     for (let i = 1; i < ERAS.length; i++) {
@@ -203,29 +234,54 @@ describe('every shipped jam', () => {
     for (let i = 25; i <= 180; i++) {
       const level = getLevel(i);
       const p = bumpLikelihood(level);
-      // A lot nobody can move is opaque; one everybody can move has no read.
-      // Breathers sit at the open end of that range on purpose (GDD §6).
-      expect(p, `L${i} bump likelihood`).toBeLessThan(0.97);
-      if (level.band !== Band.Easy) {
-        expect(p, `L${i} bump likelihood`).toBeGreaterThan(0.3);
-      }
+      // A tap on a car that cannot drive off is a bump: free, comedic, and the
+      // whole read. A jam where most taps bump is a jam that has to be looked
+      // at. Breathers sit at the open end of that range on purpose (GDD §6).
+      expect(p, `L${i} bump likelihood`).toBeGreaterThan(level.band === Band.Easy ? 0.3 : 0.4);
+      // Opaque is a different thing from tight, and is measured on moves rather
+      // than exits: there is always something to do.
+      expect(legalMoves(createLotState(level)).length, `L${i} is opaque`).toBeGreaterThan(0);
     }
   }, 180_000);
 
-  it('tightens the opening band by band', () => {
-    const median = (band: Band) => {
+  it('grades how much of the lot is held back, band by band', () => {
+    // This used to compare openings, on the theory that a harder lot shows the
+    // player fewer free cars. It no longer does, and the reason is worth
+    // recording: a free exit is never a mistake to take, so those cars come off
+    // the lot whatever their number, and counting them measures how a jam
+    // *looks* rather than how hard it is. Every band now opens with two or three
+    // free cars and they are all gone within a few taps.
+    //
+    // What separates the bands is the untying that follows. The *share* held
+    // back saturates — every band past the on-ramp ends up holding roughly two
+    // fifths of its cars, because that is what the geometry will bear — so the
+    // graded axis is how many repositions it takes to release them.
+    const mean = (band: Band, of: (i: number) => number) => {
       const values: number[] = [];
       for (let i = 21; i <= TOTAL_LEVELS; i++) {
-        const level = getLevel(i);
-        if (level.band === band) values.push(bumpLikelihood(level));
+        if (getLevel(i).band === band) values.push(of(i));
       }
-      values.sort((a, b) => a - b);
-      return values[Math.floor(values.length / 2)];
+      return values.reduce((a, b) => a + b, 0) / values.length;
     };
-    // Openness is scored as a share of the lot, so this holds at every size.
-    expect(median(Band.Easy)).toBeLessThan(median(Band.Medium));
-    expect(median(Band.Medium)).toBeLessThan(median(Band.Hard));
-    expect(median(Band.Hard)).toBeGreaterThan(0.5);
+    const stall = (band: Band) =>
+      mean(band, (i) => analyseDifficulty(getLevel(i), getLevel(i).parSolution).greedyStallShare);
+    const slides = (band: Band) => mean(band, (i) => getLevel(i).repositionMoves ?? 0);
+
+    expect(slides(Band.Easy)).toBeLessThan(slides(Band.Medium));
+    expect(slides(Band.Medium)).toBeLessThan(slides(Band.Hard));
+    expect(slides(Band.Hard)).toBeLessThan(slides(Band.Showcase));
+
+    // And no band past the on-ramp is a walk: even a breather keeps a fifth of
+    // the lot out of reach of tapping, and the rest keep a third or more.
+    expect(stall(Band.Easy)).toBeGreaterThan(0.2);
+    expect(stall(Band.Medium)).toBeGreaterThan(0.33);
+    expect(stall(Band.Hard)).toBeGreaterThan(0.33);
+
+    // Breathers still keep an obvious way in, in cars rather than in shares:
+    // rest means "somewhere to start", not "a bigger fraction of a bigger lot".
+    const opens = (band: Band) =>
+      mean(band, (i) => analyseDifficulty(getLevel(i), getLevel(i).parSolution).openExits);
+    expect(opens(Band.Easy)).toBeGreaterThan(1.5);
   }, 180_000);
 
   it('lets every VIP leave before the rope drops', () => {
@@ -260,9 +316,13 @@ describe('endless content', () => {
   it('makes the daily genuinely the hardest jam of the day', () => {
     for (const day of [1, 42, 100, 777]) {
       const jam = rushHourJam(day);
-      const metrics = analyseDifficulty(jam);
-      expect(jam.vehicles.length, `day ${day} cars`).toBeGreaterThanOrEqual(14);
-      expect(metrics.knotDepth, `day ${day} knot depth`).toBeGreaterThanOrEqual(6);
+      const metrics = analyseDifficulty(jam, jam.parSolution);
+      expect(jam.vehicles.length, `day ${day} cars`).toBeGreaterThanOrEqual(12);
+      expect(metrics.knotDepth, `day ${day} knot depth`).toBeGreaterThanOrEqual(5);
+      // Car count is the weakest thing a daily could be measured by, now that
+      // it is not what makes a jam hard. These are.
+      expect(metrics.greedyStallShare, `day ${day} holds back`).toBeGreaterThan(0.2);
+      expect(metrics.repositionMoves, `day ${day} repositions`).toBeGreaterThanOrEqual(1);
     }
   }, 120_000);
 });
