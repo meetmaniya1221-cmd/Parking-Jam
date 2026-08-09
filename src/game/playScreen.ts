@@ -126,6 +126,11 @@ const SAVE_ME_PRICE = 15;
  */
 let bigLotHintShown = false;
 
+/** Write only when the text actually changed, so live regions stay quiet. */
+function setText(node: HTMLElement, next: string): void {
+  if (node.textContent !== next) node.textContent = next;
+}
+
 export class PlayScreen {
   readonly root: HTMLElement;
   private readonly canvas: HTMLCanvasElement;
@@ -152,6 +157,8 @@ export class PlayScreen {
   private counterNode!: HTMLElement;
   private bumpNode!: HTMLElement;
   private bumpValue!: HTMLElement;
+  private bumpLimit!: HTMLElement;
+  private bumpSpoken!: HTMLElement;
   private titleNode!: HTMLElement;
   private patternNode!: HTMLElement;
   private ambulanceNode!: HTMLElement;
@@ -159,6 +166,7 @@ export class PlayScreen {
   private meterNode!: HTMLElement;
   private meterValue!: HTMLElement;
   private coachNode!: HTMLElement;
+  private coachText!: HTMLElement;
   private lotNode!: HTMLElement;
   private flashNode!: HTMLElement;
   private rulesNode!: HTMLElement;
@@ -166,6 +174,8 @@ export class PlayScreen {
   private rulesLimitHead!: HTMLElement;
   private rulesLimitBody!: Text;
   private failed = false;
+  /** Set by unmount, so nothing queued on a timer wakes up onto another screen. */
+  private gone = false;
   private boosterButtons: BoosterButton[] = [];
   private undoButton!: HTMLButtonElement;
   private deadEndWarned = false;
@@ -221,16 +231,23 @@ export class PlayScreen {
     );
 
     this.bumpValue = el('span', { class: 'bumps__value', text: '0' });
+    this.bumpLimit = el('span', { class: 'bumps__limit', text: `/${BUMP_LIMIT}` });
+    // The digits are for the eye and the sentence is for the ear. Read aloud,
+    // "two slash three" is not a warning — "one bump left before the jam
+    // resets" is, and it is the announcement that has to land on the bump that
+    // matters.
+    this.bumpSpoken = el('span', { class: 'srOnly' });
     this.bumpNode = el(
       'div',
-      { class: 'chip bumps', title: `Three bumps and the jam resets`, aria: { live: 'polite' } },
+      { class: 'chip bumps', aria: { live: 'polite' } },
       icon('shield', 'icon--sm'),
       el(
         'span',
-        { class: 'bumps__pair' },
+        { class: 'bumps__pair', aria: { hidden: 'true' } },
         this.bumpValue,
-        el('span', { class: 'bumps__limit', text: `/${BUMP_LIMIT}` }),
+        this.bumpLimit,
       ),
+      this.bumpSpoken,
     );
 
     this.ambulanceValue = el('span', {});
@@ -288,14 +305,20 @@ export class PlayScreen {
     const intro = patternIntroducedAt(this.levelIndex);
     if (!intro) return;
     this.coachNode.hidden = false;
-    this.coachNode.textContent = `${intro.label} — ${intro.blurb}`;
+    this.coachText.textContent = `${intro.label} — ${intro.blurb}`;
     window.setTimeout(() => {
       if (this.levelIndex > TUTORIAL_LEVELS) this.coachNode.hidden = true;
     }, 4200);
   }
 
   private buildCoach(): HTMLElement {
-    this.coachNode = el('div', { class: 'coach', hidden: true });
+    this.coachText = el('span', {});
+    this.coachNode = el(
+      'div',
+      { class: 'coach', hidden: true },
+      icon('hint', 'icon--sm'),
+      this.coachText,
+    );
     return this.coachNode;
   }
 
@@ -303,8 +326,9 @@ export class PlayScreen {
     const boosterRow = el('div', { class: 'boosters' });
     this.undoButton = button('', {
       variant: 'secondary',
-      class: 'booster booster--undo',
+      class: 'booster',
       title: 'Undo the last slide',
+      aria: { label: 'Undo the last slide' },
       onTap: () => this.undo(),
     });
     this.undoButton.prepend(icon('undo'));
@@ -323,6 +347,11 @@ export class PlayScreen {
         variant: 'secondary',
         class: 'booster',
         title: def.label,
+        // Not decorative: on a short viewport `.booster__label` is display:none,
+        // which takes the button's name-from-content with it and leaves the
+        // count badge as the whole accessible name — four buttons announcing as
+        // "3", "0", "1", "2".
+        aria: { label: def.label },
         onTap: () => this.useBooster(def.id),
       });
       node.prepend(icon(def.art));
@@ -393,7 +422,10 @@ export class PlayScreen {
     this.elapsedBeforePause = resume?.elapsedMs ?? 0;
     if (resume) {
       this.view.state.slides = resume.slides;
-      this.view.state.bumps = resume.bumps;
+      // Saves predate the bump limit — an in-flight one can hold nine of them,
+      // and restoring that verbatim would end the attempt on the first honk of
+      // a level the player has not yet touched. Always leave one in hand.
+      this.view.state.bumps = Math.min(resume.bumps, BUMP_LIMIT - 1);
     }
 
     const { district } = chapterPosition(this.levelIndex);
@@ -422,21 +454,36 @@ export class PlayScreen {
     if (patternIntroducedAt(this.levelIndex)) return; // never two coach lines at once
     bigLotHintShown = true;
     this.coachNode.hidden = false;
-    this.coachNode.textContent = 'Big lot — drag the asphalt to look round, double-tap to fit.';
+    this.coachText.textContent = 'Big lot — drag the asphalt to look round, double-tap to fit.';
     window.setTimeout(() => {
       if (this.levelIndex > TUTORIAL_LEVELS) this.coachNode.hidden = true;
     }, 5200);
   }
 
   unmount(): void {
+    this.gone = true;
     window.clearInterval(this.tickTimer);
     window.clearTimeout(this.hintTimer);
     window.clearTimeout(this.coachTimer);
     window.clearTimeout(this.deadEndTimer);
     this.audio.stopBed();
     setDebugLot(null, null);
-    if (this.mode === 'campaign' && this.view && !this.finished && this.view.state.remaining > 0) {
+    // A bumped-out lot is not a lot worth coming back to: resuming it would
+    // drop the player into the jammed position with no bumps left, and the
+    // first honk would end it again before they had made a move.
+    if (
+      this.mode === 'campaign' &&
+      this.view &&
+      !this.finished &&
+      !this.failed &&
+      this.view.state.remaining > 0
+    ) {
       this.saveResume();
+    }
+    if (this.failed) {
+      this.store.update((s) => {
+        if (s.resume?.levelIndex === this.levelIndex) s.resume = null;
+      });
     }
     this.view?.destroy();
     this.view = null;
@@ -541,7 +588,10 @@ export class PlayScreen {
     const total = state.x.length;
     const remaining = state.remaining;
 
-    this.counterValue.textContent = String(remaining);
+    // `syncHud` runs on every state change, including a keyboard selection move
+    // that changed nothing. Writing an identical string still replaces the text
+    // node, and a live region re-announces on any mutation.
+    setText(this.counterValue, String(remaining));
     // The counter is the loop's metronome: it brightens as the goal nears.
     this.counterNode.classList.toggle('counter--near', remaining <= 5 && remaining > 0);
     this.counterNode.classList.toggle('counter--final', remaining <= 3 && remaining > 0);
@@ -549,13 +599,18 @@ export class PlayScreen {
     // The bump gauge escalates a step ahead of the consequence: amber on the
     // first, red and breathing on the last one that is still survivable.
     const limited = this.bumpLimitApplies();
-    const bumps = Math.min(state.bumps, BUMP_LIMIT);
-    this.bumpValue.textContent = String(bumps);
+    const bumps = limited ? Math.min(state.bumps, BUMP_LIMIT) : state.bumps;
+    setText(this.bumpValue, String(bumps));
+    // On the tutorial there is no limit, so there is no "/3" — a gauge frozen
+    // at 3/3 on the level whose coach line is "no harm done" is a lie.
+    this.bumpLimit.hidden = !limited;
     this.bumpNode.classList.toggle('bumps--warn', limited && bumps === 1);
     this.bumpNode.classList.toggle('bumps--danger', limited && bumps >= BUMP_LIMIT - 1);
-    this.bumpNode.title = limited
+    const spoken = limited
       ? `${BUMP_LIMIT - bumps} bump${BUMP_LIMIT - bumps === 1 ? '' : 's'} left before the jam resets`
-      : 'Bumps are free while you are learning';
+      : `${bumps} bump${bumps === 1 ? '' : 's'}, free while you are learning`;
+    setText(this.bumpSpoken, spoken);
+    this.bumpNode.title = spoken;
 
     const band = this.level.band;
     this.titleNode.textContent = this.title;
@@ -583,7 +638,7 @@ export class PlayScreen {
     // It has to tell the truth on both sides of the tutorial line: while bumps
     // are free it says so, and the level the limit switches on is the level the
     // strip changes under the player — which is the clearest possible warning.
-    this.rulesNode.hidden = this.levelIndex > RULES_STRIP_LEVELS;
+    this.rulesNode.hidden = this.mode !== 'campaign' || this.levelIndex > RULES_STRIP_LEVELS;
     if (limited) {
       this.rulesLimitHead.textContent = `${BUMP_LIMIT} bumps`;
       this.rulesLimitBody.textContent = 'and it resets';
@@ -605,7 +660,7 @@ export class PlayScreen {
   }
 
   private tick(): void {
-    if (!this.view || this.finished || this.paused) return;
+    if (!this.view || this.finished || this.failed || this.paused) return;
     if (this.ambulanceDeadline > 0) {
       const left = this.ambulanceDeadline - performance.now();
       if (left <= 0) {
@@ -715,7 +770,10 @@ export class PlayScreen {
     if (!this.view || this.finished || this.failed) return;
     this.failed = true;
     this.view.setInteractive(false);
-    window.clearInterval(this.tickTimer);
+    // Deliberately *not* clearing tickTimer: it is created once in mount(), and
+    // Retry has no way to re-arm it — a cleared interval means the rescue window
+    // never counts down again for the rest of the screen's life. `tick()` guards
+    // on `failed` instead.
     window.clearTimeout(this.hintTimer);
     window.clearTimeout(this.coachTimer);
     window.clearTimeout(this.deadEndTimer);
@@ -726,7 +784,10 @@ export class PlayScreen {
     const cars = this.view.state.remaining;
     const total = this.view.state.x.length;
     await new Promise((resolve) => window.setTimeout(resolve, 620));
-    if (this.failed) {
+    // The player can leave, or restart, inside that pause. Either way this
+    // screen no longer owns the surface, and an un-dismissible sheet with a
+    // dead Retry button would land on top of whatever replaced it.
+    if (this.failed && !this.gone && this.view) {
       showFailScreen({
         levelLabel: this.title,
         reason: `${BUMP_LIMIT} bumps`,
@@ -809,6 +870,7 @@ export class PlayScreen {
   }
 
   private undo(): void {
+    if (this.finished || this.failed) return;
     if (!this.view?.undo()) return;
     this.deadEndWarned = false;
     this.dismissCoach(false);
@@ -844,7 +906,7 @@ export class PlayScreen {
    * ---------------------------------------------------------------- */
 
   private useBooster(id: BoosterId): void {
-    if (!this.view || this.finished) return;
+    if (!this.view || this.finished || this.failed) return;
     const state = this.store.state;
     if (state.boosters[id] <= 0) {
       this.offerBooster(id);
@@ -932,7 +994,7 @@ export class PlayScreen {
       'Blocked? It just honks. No harm done.',
       'Read the order. Then go.',
     ];
-    this.coachNode.textContent = captions[Math.min(2, this.levelIndex - 1)];
+    this.coachText.textContent = captions[Math.min(2, this.levelIndex - 1)];
     // The hand appears only after 4 s of hesitation, and never before the
     // player has had a chance to work it out unprompted.
     this.coachTimer = window.setTimeout(() => {
@@ -964,7 +1026,10 @@ export class PlayScreen {
    * ---------------------------------------------------------------- */
 
   private async onCleared(): Promise<void> {
-    if (this.finished || !this.view) return;
+    if (this.finished || this.failed || !this.view) return;
+    // A clear announced against a board that still has cars on it is a stale
+    // callback from a previous attempt, not a win.
+    if (this.view.state.remaining > 0) return;
     this.finished = true;
     this.view.setInteractive(false);
     window.clearInterval(this.tickTimer);

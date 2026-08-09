@@ -15,6 +15,7 @@ import { icon } from './icons';
 
 let overlayHost: HTMLElement | null = null;
 let openCount = 0;
+let dialogSeq = 0;
 
 export function initOverlays(host: HTMLElement): void {
   overlayHost = host;
@@ -43,6 +44,13 @@ export function openOverlay(content: HTMLElement, options: OverlayOptions = {}):
   });
   panel.setAttribute('role', 'dialog');
   panel.appendChild(content);
+  // Name the dialog from its own heading. An unnamed modal announces as
+  // "dialog" and the player has to hunt for what it is about.
+  const heading = content.querySelector<HTMLElement>('.sheet__title, .timelapse__title');
+  if (heading) {
+    if (!heading.id) heading.id = `dlg${++dialogSeq}`;
+    panel.setAttribute('aria-labelledby', heading.id);
+  }
   scrim.appendChild(panel);
 
   const returnFocus = document.activeElement as HTMLElement | null;
@@ -454,7 +462,7 @@ export function showWinScreen(model: WinScreenModel): OverlayHandle {
         el('span', { text: model.districtName }),
         el('span', { text: `${model.chapterPos}/${model.chapterSize} jams` }),
       ),
-      progressBar(model.districtProgress, 'bar--mint'),
+      progressBar(model.districtProgress, 'bar--mint', 'District progress'),
     ),
     model.nextTease ? el('p', { class: 'win__tease', text: model.nextTease }) : null,
     el(
@@ -514,7 +522,7 @@ export function showFailScreen(model: FailScreenModel): OverlayHandle {
         el('span', { text: 'Cleared before it ended' }),
         el('span', { text: `${model.cleared}/${model.total} cars` }),
       ),
-      progressBar(share, 'bar--gold'),
+      progressBar(share, 'bar--gold', 'Cars cleared before the jam ended'),
     ),
     el(
       'div',

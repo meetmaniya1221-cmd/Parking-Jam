@@ -1074,9 +1074,6 @@ export function drawVehicle(
 
   // The VIP's halo sits *under* the car, so the car stays the brightest thing
   // inside it. Drawn live rather than into the sprite because it breathes.
-  const marked = (v.tags & VehicleTag.Vip) !== 0 && v.alpha > 0.98;
-  if (marked) drawVipHalo(ctx, cam, x0, y0, bw, bh, hpx, v.vipPulse, palette);
-
   if (still) {
     const cached = sprite(spriteKey(v, bw, bh, hpx), bw + padL + padR, bh + padT + padB, dpr, (sctx) => {
       paintVehicle(sctx, v, padL, padT, bw, bh, hpx, 0, 0, palette);
@@ -1088,49 +1085,71 @@ export function drawVehicle(
   }
 
   drawStateRing(ctx, v, x0, y0, bw, bh, hpx, leanPx, leanPy, cw, palette);
-  if (marked) drawVipCrest(ctx, cam, x0, y0, bw, bh, hpx, v.vipPulse, palette);
+  if (v.tags & VehicleTag.Vip) {
+    drawVipCrest(ctx, cam, x0, y0, bw, bh, hpx, v.vipPulse, v.alpha, palette);
+  }
   ctx.restore();
 }
 
 /**
- * The VIP's golden ground glow.
+ * The VIP pools of light, all of them, in one pass under every car.
  *
  * A VIP has to be findable in under two seconds in a lot of thirty-two cars,
  * and it has to stay findable when it is also selected, also hinted, and also
  * the car that just refused to move. So it does not compete for the ring — the
  * ring belongs to interaction state. It takes the *ground*: a warm pool of
- * light under the car that nothing else in the game produces, and a slow breath
- * that catches the eye without ever flashing.
+ * light nothing else in the game produces, breathing slowly enough to catch the
+ * eye without ever flashing.
+ *
+ * Drawn here rather than inside `drawVehicle` for two reasons, both learned the
+ * hard way. Additive light composited per vehicle lands on top of whichever
+ * neighbours the painter's order had already drawn, so a perfectly ordinary car
+ * parked up-screen of a VIP came out glowing gold. And `drawVehicle` has the
+ * bump wobble in its transform, which rotated the board-shaped clip along with
+ * everything else and let the pool spill onto the kerb exactly when a VIP was
+ * knocked. Out here there is no transform and no car yet.
  */
-function drawVipHalo(
+export function drawVipGlow(
   ctx: CanvasRenderingContext2D,
+  views: readonly VehicleView[],
   cam: Camera,
-  x0: number,
-  y0: number,
-  bw: number,
-  bh: number,
-  hpx: number,
-  pulse: number,
   palette: Palette,
 ): void {
-  const cx = x0 + bw / 2;
-  const cy = y0 + bh / 2 - hpx * 0.2;
-  const reach = Math.max(bw, bh) * (0.66 + pulse * 0.08);
-  const glow = ctx.createRadialGradient(cx, cy, reach * 0.18, cx, cy, reach);
-  glow.addColorStop(0, withAlpha(palette.lemon, 0.42 + pulse * 0.18));
-  glow.addColorStop(0.55, withAlpha(palette.lemon, 0.16 + pulse * 0.08));
-  glow.addColorStop(1, withAlpha(palette.lemon, 0));
+  const lit = views.filter((v) => (v.tags & VehicleTag.Vip) !== 0 && v.alpha > 0.02);
+  if (lit.length === 0) return;
+
   ctx.save();
-  // Light on the ground stays on the ground. Unclipped, a VIP parked against
-  // the rim threw a gold smear across the kerb and out onto the page.
   ctx.beginPath();
   ctx.rect(cam.ox, cam.oy, cam.cols * cam.cw, cam.rows * cam.ch);
   ctx.clip();
   ctx.globalCompositeOperation = 'lighter';
-  ctx.fillStyle = glow;
-  ctx.beginPath();
-  ctx.ellipse(cx, cy, reach, reach * 0.92, 0, 0, Math.PI * 2);
-  ctx.fill();
+
+  for (const v of lit) {
+    const bounds = vehicleBounds(v);
+    const cx = cam.ox + ((bounds.x0 + bounds.x1) / 2) * cam.cw;
+    const cy = cam.oy + ((bounds.y0 + bounds.y1) / 2) * cam.ch;
+    // Sized to the car's own footprint rather than to its longest side: a
+    // five-cell bus taking `max(bw, bh)` threw a pool seven columns across.
+    // Generous, because the pool is *under* every car: whatever falls on a
+    // neighbour is hidden by it, and only the fringe on open asphalt shows. The
+    // old per-vehicle pass had to stay small for exactly the opposite reason.
+    const rx = (bounds.x1 - bounds.x0) * cam.cw * (0.95 + v.vipPulse * 0.1);
+    const ry = (bounds.y1 - bounds.y0) * cam.ch * (0.95 + v.vipPulse * 0.1);
+    const reach = Math.max(rx, ry);
+    const glow = ctx.createRadialGradient(cx, cy, reach * 0.18, cx, cy, reach);
+    const peak = (0.62 + v.vipPulse * 0.22) * v.alpha;
+    glow.addColorStop(0, withAlpha(palette.lemon, peak));
+    glow.addColorStop(0.45, withAlpha(palette.lemon, peak * 0.45));
+    glow.addColorStop(1, withAlpha(palette.lemon, 0));
+    ctx.fillStyle = glow;
+    ctx.save();
+    ctx.translate(cx, cy);
+    ctx.scale(rx / reach, ry / reach);
+    ctx.beginPath();
+    ctx.arc(0, 0, reach, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  }
   ctx.restore();
 }
 
@@ -1152,23 +1171,30 @@ function drawVipCrest(
   bh: number,
   hpx: number,
   pulse: number,
+  alpha: number,
   palette: Palette,
 ): void {
   const cw = cam.cw;
   if (cw < 26) return;
   const size = Math.min(cw * 0.38, 17);
   const cx = x0 + bw / 2;
-  const wanted = y0 - hpx - size * 0.5 - cw * 0.06 - pulse * cw * 0.03;
-  // A VIP parked in the top row has no sky to float a crown in, so the crown
-  // drops onto its roof instead of hovering over the kerb. Same marker, same
-  // car, and it never leaves the asphalt.
-  const sky = cam.oy + size * 0.8;
-  const cy =
-    wanted >= sky
-      ? wanted
-      : Math.min(y0 + bh * 0.42 - hpx * 0.5, cam.oy + cam.rows * cam.ch - size * 0.9);
+
+  // The crown wants to hover just above the roof. Where there is no room — a
+  // VIP in the top row — it drops onto the car instead. Either way it is
+  // clamped inside the asphalt, and the clamp is applied to *both* branches:
+  // clamping only the branch that looked like it needed it still let a row-zero
+  // bus push the disc out over the kerb the comment claimed it never left.
+  const margin = size * 1.02;
+  const top = cam.oy + margin;
+  const bottom = Math.max(top, cam.oy + cam.rows * cam.ch - margin);
+  const hover = y0 - hpx - size * 0.5 - cw * 0.06 - pulse * cw * 0.03;
+  const onRoof = y0 + bh * 0.42 - hpx * 0.5 - pulse * cw * 0.03;
+  const cy = Math.min(Math.max(hover >= top ? hover : onRoof, top), bottom);
 
   ctx.save();
+  // Fades out with the car as it drives off, rather than vanishing on the one
+  // frame its alpha crosses a threshold.
+  ctx.globalAlpha *= alpha;
   ctx.translate(cx, cy);
   // A soft disc behind it, so gold-on-gold cars keep the crown readable.
   ctx.fillStyle = withAlpha(palette.ink, 0.62);
@@ -1280,6 +1306,21 @@ function paintVehicle(
   ctx.lineWidth = Math.max(1, unit * 0.022);
   roundRect(ctx, tx + unit * 0.012, ty + unit * 0.012, tw - unit * 0.024, th - unit * 0.024, radius);
   ctx.stroke();
+
+  // A gold rim on the VIP's own bodywork.
+  //
+  // The ground pool is the elegant signal and the crown is the unambiguous one,
+  // but neither survives the case that actually matters: a VIP boxed in on all
+  // four sides in a thirty-two car lot, where the pool is entirely covered by
+  // its neighbours. The rim is on the car, so it is visible whenever the car is
+  // — and because it keys off `tags`, which the sprite key already carries, it
+  // is baked once rather than stroked every frame.
+  if (v.tags & VehicleTag.Vip) {
+    ctx.strokeStyle = withAlpha(palette.lemon, 0.9);
+    ctx.lineWidth = Math.max(1.5, unit * 0.055);
+    roundRect(ctx, tx, ty, tw, th, radius);
+    ctx.stroke();
+  }
 }
 
 /** Soft contact shadow, stacked from wide-and-faint to tight-and-dark. */

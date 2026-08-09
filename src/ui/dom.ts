@@ -92,16 +92,25 @@ export function pill(icon: string | HTMLElement, value: string, className = ''):
   );
 }
 
-export function progressBar(fraction: number, className = ''): HTMLElement {
+export function progressBar(fraction: number, className = '', label = 'Progress'): HTMLElement {
   const clamped = Math.max(0, Math.min(1, fraction));
-  return el(
+  // `aria-value*` is only meaningful with a role that declares them; on a bare
+  // div they are silently discarded and the bar conveys nothing at all.
+  const node = el(
     'div',
     {
       class: `bar ${className}`.trim(),
-      aria: { valuenow: String(Math.round(clamped * 100)), valuemin: '0', valuemax: '100' },
+      aria: {
+        valuenow: String(Math.round(clamped * 100)),
+        valuemin: '0',
+        valuemax: '100',
+        label,
+      },
     },
     el('div', { class: 'bar__fill', style: { width: `${clamped * 100}%` } }),
   );
+  node.setAttribute('role', 'progressbar');
+  return node;
 }
 
 export function formatNumber(n: number): string {

@@ -294,6 +294,62 @@ async function checkBumpLimit(page) {
   step(`retry reset ${frozen} stranded cars back to ${after.remaining}, 0 bumps`);
 }
 
+/**
+ * The three ways the bump limit was quietly wrong.
+ *
+ * Each of these is a race or a state leak that no unit test can see and no
+ * screenshot shows: an undo that hands a bump back makes the limit meaningless,
+ * a fail sheet queued behind a 620 ms pause lands on whatever screen replaced
+ * it, and a retry that leaves the rescue interval cleared freezes the clock for
+ * the rest of the level.
+ */
+async function checkFailStateEdges(page) {
+  // Undo rewinds the board, not the record of what you did to it.
+  await page.evaluate(() => window.__gridlock.jumpTo(12));
+  await page.waitForSelector('.lot__canvas');
+  await page.waitForTimeout(700);
+  const open = await page.evaluate(() => window.__gridlock.exitable());
+  if (open.length) {
+    await tapVehicle(page, open[0]);
+    await page.waitForTimeout(500);
+  }
+  for (let i = 0; i < 2; i++) {
+    const stuck = await page.evaluate(() => window.__gridlock.stuck()[0] ?? -1);
+    if (stuck < 0) break;
+    await tapVehicle(page, stuck);
+    await page.waitForTimeout(320);
+  }
+  const beforeUndo = (await lotState(page)).bumps;
+  await page.locator('.booster--undo, .boosters .btn').first().click().catch(() => {});
+  await page.waitForTimeout(500);
+  const afterUndo = (await lotState(page)).bumps;
+  if (afterUndo < beforeUndo) {
+    problems.push(`bump limit: undo handed back ${beforeUndo - afterUndo} bump(s)`);
+  } else {
+    step(`undo kept the bump count at ${afterUndo}`);
+  }
+
+  // Leaving inside the freeze must not strand the fail sheet on another screen.
+  await page.evaluate(() => window.__gridlock.jumpTo(13));
+  await page.waitForTimeout(700);
+  for (let i = 0; i < 3; i++) {
+    const stuck = await page.evaluate(() => window.__gridlock.stuck()[0] ?? -1);
+    if (stuck < 0) break;
+    await tapVehicle(page, stuck);
+    await page.waitForTimeout(i === 2 ? 160 : 320);
+  }
+  await page.locator('.play__headRow .iconBtn').first().click();
+  await page.waitForTimeout(1600);
+  if (await page.locator('.sheet--fail').isVisible().catch(() => false)) {
+    problems.push('bump limit: the fail sheet followed the player off the level');
+  }
+  const stale = await page.evaluate(
+    () => JSON.parse(localStorage.getItem('gridlock-city:save:v1') ?? '{}').resume?.levelIndex,
+  );
+  if (stale === 13) problems.push('bump limit: a bumped-out lot was saved to resume');
+  else step('leaving mid-freeze left no orphan sheet and no resume');
+}
+
 async function checkKeyboard(page) {
   await page.evaluate(() => window.__gridlock.jumpTo(12));
   await page.waitForSelector('.lot__canvas');
@@ -582,6 +638,7 @@ async function run(page) {
 
   await checkInteractions(page);
   await checkBumpLimit(page);
+  await checkFailStateEdges(page);
   await checkKeyboard(page);
   await checkMeteredLot(page);
   await checkResume(page);

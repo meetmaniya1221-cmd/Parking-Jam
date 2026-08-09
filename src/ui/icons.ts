@@ -77,8 +77,9 @@ export function icon(name: IconName, className = ''): HTMLImageElement {
   node.src = ICONS[name];
   node.alt = '';
   node.draggable = false;
-  // Chrome icons are tiny and always on screen the moment their surface is; a
-  // lazy load would pop them in a frame late.
-  node.decoding = 'sync';
+  // Decode off the main thread. `sync` was the wrong hint for the right worry:
+  // the concern is a late *load*, and forcing a synchronous decode buys nothing
+  // for a 128 px image while blocking the frame that wanted to show it.
+  node.decoding = 'async';
   return node;
 }

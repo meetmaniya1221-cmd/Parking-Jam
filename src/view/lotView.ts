@@ -47,6 +47,7 @@ import {
   drawParticles,
   drawPreview,
   drawVehicle,
+  drawVipGlow,
   fitCamera,
   Particle,
   PathPreview,
@@ -188,6 +189,7 @@ export class LotView {
   private anims: Anim[] = [];
   private particles: Particle[] = [];
   private raf = 0;
+  private clearedTimer = 0;
   private lastFrame = 0;
   private timeScale = 1;
   private slowMoRemaining = 0;
@@ -284,6 +286,7 @@ export class LotView {
   }
 
   setLevel(level: LevelDef, restore?: { vehicles: number[] }): void {
+    window.clearTimeout(this.clearedTimer);
     this.level = level;
     this.state = createLotState(level);
     if (restore) this.applyRestore(restore.vehicles);
@@ -415,11 +418,7 @@ export class LotView {
     this.audio.exit(this.state.remaining, this.state.x.length);
     this.events.onExit?.(vi, this.state.remaining);
     this.events.onStateChanged?.();
-    if (this.state.remaining === 0) {
-      window.setTimeout(() => {
-        if (!this.destroyed) this.events.onCleared?.();
-      }, this.duration(EXIT_MS + 220));
-    }
+    if (this.state.remaining === 0) this.scheduleCleared();
     return true;
   }
 
@@ -444,6 +443,7 @@ export class LotView {
 
   destroy(): void {
     this.destroyed = true;
+    window.clearTimeout(this.clearedTimer);
     cancelAnimationFrame(this.raf);
     this.canvas.removeEventListener('pointerdown', this.onPointerDown);
     this.canvas.removeEventListener('pointermove', this.onPointerMove);
@@ -755,6 +755,13 @@ export class LotView {
 
   private onKeyDown = (e: KeyboardEvent): void => {
     if (!this.interactive) return;
+    // An OS key-repeat fires ~30 times a second. That was merely noisy when a
+    // bump cost nothing; with three of them ending the jam it would fail a
+    // level in a tenth of a second of a held key.
+    if (e.repeat) {
+      if (e.key !== 'Tab') e.preventDefault();
+      return;
+    }
     const live: number[] = [];
     for (let i = 0; i < this.state.x.length; i++) if (!this.state.gone[i]) live.push(i);
     if (live.length === 0) return;
@@ -902,7 +909,10 @@ export class LotView {
     this.state.remaining = entry.remaining;
     this.state.vipsRemaining = entry.vipsRemaining;
     this.state.slides = entry.slides;
-    this.state.bumps = entry.bumps;
+    // Bumps are deliberately *not* rewound. History is pushed on a committed
+    // move and a bump commits nothing, so the snapshot carries the count as of
+    // the last slide — restoring it would let a player undo their way out of
+    // every honk, which is the whole bump limit undone by one button.
     rebuildOcc(this.state);
 
     for (let i = 0; i < this.anims.length; i++) {
@@ -984,14 +994,24 @@ export class LotView {
     }
 
     this.events.onStateChanged?.();
-    if (this.state.remaining === 0) {
-      window.setTimeout(
-        () => {
-          if (!this.destroyed) this.events.onCleared?.();
-        },
-        this.duration(EXIT_MS + 220),
-      );
-    }
+    if (this.state.remaining === 0) this.scheduleCleared();
+  }
+
+  /**
+   * Announce the clear once the last car has finished driving off.
+   *
+   * The delay is choreography — the win screen must not land on the same frame
+   * as the final exit — but it is also a window in which the player can hit
+   * Restart, and a timer that survives the board being replaced fires
+   * `onCleared` against a *fresh* lot. That banks a phantom clear: zero slides,
+   * zero bumps, no elapsed time, so it scores a Clean Exit and a Gold Plate and
+   * advances the campaign. Hence a handle, cancelled wherever the board goes.
+   */
+  private scheduleCleared(): void {
+    window.clearTimeout(this.clearedTimer);
+    this.clearedTimer = window.setTimeout(() => {
+      if (!this.destroyed && this.state.remaining === 0) this.events.onCleared?.();
+    }, this.duration(EXIT_MS + 220));
   }
 
   private bump(vi: number, dir: Dir): void {
@@ -1367,6 +1387,11 @@ export class LotView {
     const views = this.collectVehicleViews();
     // Painter's order: nearer to the bottom of the screen draws last.
     views.sort((a, b) => a.gy + a.gx * 0.001 - (b.gy + b.gx * 0.001));
+    // The VIP pools go down first, in one pass under every car. Drawn per
+    // vehicle they were composited additively over whichever neighbours had
+    // already been painted, so an ordinary car parked up-screen of a VIP came
+    // out washed gold — which is precisely the signal the pool exists to own.
+    drawVipGlow(ctx, views, this.camera, this.view.palette);
     for (const v of views) drawVehicle(ctx, v, this.camera, this.view.palette, this.dpr);
 
     if (this.view.night) drawNightMask(ctx, views, this.camera, cssW, cssH);
