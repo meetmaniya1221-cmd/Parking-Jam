@@ -303,9 +303,20 @@ export function nextMoveHint(state: LotState): Move | null {
   return res.solvable && res.moves.length ? res.moves[0] : null;
 }
 
-/** True when the lot can still be cleared from here. Used to guard against dead ends. */
+/**
+ * True when the lot can still be cleared from here. Used to guard against dead ends.
+ *
+ * "Not proven solvable" and "proven unsolvable" are different answers, and only
+ * the second one earns a warning. The search gives up after a node budget, and
+ * a lot that genuinely needs repositioning is exactly the kind that exhausts
+ * it — so treating a truncated search as a dead end would tell players their
+ * perfectly live board was ruined. When in doubt, say nothing.
+ */
 export function isStillSolvable(state: LotState): boolean {
-  return solveState(state, { maxNodes: 60_000 }).solvable;
+  const res = solveState(state, { maxNodes: 60_000 });
+  // `optimal` doubles as "the search ran to exhaustion"; without it, a negative
+  // result only means the budget ran out.
+  return res.solvable || !res.optimal;
 }
 
 /* ------------------------------------------------------------------ *

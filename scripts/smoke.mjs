@@ -128,6 +128,96 @@ async function clearLot(page, label) {
   return lotState(page);
 }
 
+/**
+ * Clear a level by replaying the line the generator proved.
+ *
+ * Tapping whatever currently has a clear lane no longer finishes these lots —
+ * that is the entire point of the puzzle rewrite — so the harness has to play
+ * them properly, repositioning cars as the solution requires. Every step goes
+ * through a real pointer drag, so this still exercises input, animation and
+ * commit exactly as a player would.
+ */
+async function solveLevel(page, label) {
+  const steps = await page.evaluate(() => window.__gridlock.solutionSteps());
+  if (!steps.length) {
+    problems.push(`${label}: no shipped solution to replay`);
+    return lotState(page);
+  }
+  for (let i = 0; i < steps.length; i++) {
+    const move = steps[i];
+    if (move.exit) {
+      // Exits are tapped, not dragged. A car leaving the lot is by definition on
+      // an edge, so the drag that would push it past the curb ends outside the
+      // canvas — and a mouse pointer, unlike a finger, gets no implicit capture,
+      // so those events never reach the view. Tapping is the path a player uses
+      // for this anyway: it drives the car as far forward as it can go.
+      await tapVehicle(page, move.vi);
+    } else {
+      await dragVehicle(page, move.vi, move.cells);
+    }
+    await page.waitForTimeout(120);
+
+    // Close any shortfall from live state. A single gesture does not always
+    // deliver the whole distance — an oil slick carries a car past where it was
+    // aimed, and the drag is clamped to what the view thinks is reachable — so
+    // aim at the target rather than trusting one throw. Still all real pointer
+    // input; it just finishes the job.
+    for (let retry = 0; retry < 3; retry++) {
+      const now = await page.evaluate((m) => {
+        const s = window.__gridlock.lotView.state;
+        if (s.gone[m.vi]) return { gone: true, gap: 0 };
+        const f = s.facing[m.vi];
+        const dx = [0, 1, 0, -1][f];
+        const dy = [-1, 0, 1, 0][f];
+        const along = dx !== 0 ? (m.toX - s.x[m.vi]) / dx : (m.toY - s.y[m.vi]) / dy;
+        return { gone: false, gap: Number.isFinite(along) ? along : 0 };
+      }, move);
+
+      if (move.exit) {
+        if (now.gone) break;
+        await tapVehicle(page, move.vi);
+      } else {
+        if (now.gap === 0) break;
+        await dragVehicle(page, move.vi, now.gap);
+      }
+      await page.waitForTimeout(120);
+    }
+    // Check every step. A silent divergence halfway through would otherwise
+    // surface only as "cars left over", which says nothing about the cause.
+    const landed = await page.evaluate((m) => {
+      const s = window.__gridlock.lotView.state;
+      return { gone: !!s.gone[m.vi], x: s.x[m.vi], y: s.y[m.vi] };
+    }, move);
+    const ok = move.exit ? landed.gone : landed.x === move.toX && landed.y === move.toY;
+    if (!ok) {
+      const why = await page.evaluate((m) => {
+        const g = window.__gridlock;
+        const s = g.lotView.state;
+        const f = s.facing[m.vi];
+        return {
+          exitable: g.exitable().includes(m.vi),
+          vipsRemaining: s.vipsRemaining,
+          tags: s.tags[m.vi],
+          facing: f,
+        };
+      }, move);
+      problems.push(`${label}: step ${i + 1} diag ${JSON.stringify(why)}`);
+      problems.push(
+        `${label}: step ${i + 1}/${steps.length} (car ${move.vi}, ${move.cells} cells,` +
+          ` ${move.exit ? 'exit' : 'slide'}) wanted ${move.toX},${move.toY} got ` +
+          `${landed.gone ? 'gone' : `${landed.x},${landed.y}`}`,
+      );
+      return lotState(page);
+    }
+  }
+  await page.waitForTimeout(400);
+  const state = await lotState(page);
+  if (state && state.remaining > 0) {
+    problems.push(`${label}: replaying the shipped solution left ${state.remaining} cars`);
+  }
+  return state;
+}
+
 /** Drag a car along its own axis with a real pointer gesture. */
 async function dragVehicle(page, vi, cells) {
   const path = await page.evaluate(
@@ -554,9 +644,8 @@ async function run(page) {
     if (state.total < 8) problems.push(`L${target} only has ${state.total} cars`);
     await page.screenshot({ path: `${SHOTS}/05-L${target}.png` });
 
-    const cleared = await clearLot(page, `L${target}`);
+    const cleared = await solveLevel(page, `L${target}`);
     step(`L${target} finished: ${cleared.remaining} left, ${cleared.bumps} bumps`);
-    if (cleared.bumps > 0) problems.push(`L${target}: ${cleared.bumps} bumps from clean taps`);
     const win = await waitForWin(page);
     await page.waitForTimeout(300);
     await assertSingleModal(page, `L${target} win`);

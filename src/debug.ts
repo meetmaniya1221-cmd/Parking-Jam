@@ -31,6 +31,15 @@ export interface GridlockDebug {
   /** Vehicles the Dispatcher Call is currently highlighting. */
   hintedVehicles(): number[];
   /**
+   * The shipped solution as drag gestures, from the level's opening position.
+   *
+   * A harness cannot clear these lots by tapping any more — that is the whole
+   * point of the generator rewrite — so it needs the line the generator proved.
+   * Each step is a signed distance along the car's own axis: positive is
+   * forward, negative is backing up.
+   */
+  solutionSteps(): Array<{ vi: number; cells: number; exit: boolean; toX: number; toY: number }>;
+  /**
    * The level that introduces a named pattern, or null.
    *
    * Exposed so a harness never has to restate the schedule: a test that hard
@@ -79,6 +88,26 @@ const handle: GridlockDebug = {
   },
   patternIntro(tag: string): number | null {
     return PATTERNS.find((p) => p.tag === tag)?.intro ?? null;
+  },
+  solutionSteps(): Array<{ vi: number; cells: number; exit: boolean; toX: number; toY: number }> {
+    const view = handle.lotView;
+    const solution = view?.currentLevel().solution;
+    if (!view || !solution) return [];
+    // Facing has to be tracked, because a roundabout pivot turns a car and every
+    // later step for it is expressed relative to the new heading. Only a pivot
+    // does that: sliding backwards moves a car without turning it, so updating
+    // the heading on every move flips the sign of every subsequent gesture for
+    // that car — which is exactly the bug this comment exists to prevent.
+    const facing = view.currentLevel().vehicles.map((v) => v.facing as number);
+    return solution.map((m) => {
+      const exit = m.kind === 'exit';
+      const forward = m.dir === facing[m.vi];
+      // Overshoot an exit by a cell: a drag of exactly the curb distance sits
+      // on the boundary, and anything past it commits unambiguously.
+      const magnitude = Math.max(1, m.distance) + (exit ? 1 : 0);
+      if (m.kind === 'pivot') facing[m.vi] = m.dir;
+      return { vi: m.vi, cells: magnitude * (forward ? 1 : -1), exit, toX: m.toX, toY: m.toY };
+    });
   },
   wasteAMove(): boolean {
     const view = handle.lotView;

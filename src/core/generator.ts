@@ -1,19 +1,42 @@
 /**
- * JamForge — the level generator (GDD §6 "Production at Scale").
+ * JamForge — the board, and the accept/reject loop around it.
  *
- * Lots are built **backwards**: vehicles are inserted one at a time, and each
- * insertion is only accepted if that vehicle could drive straight off the lot
- * given everything already placed. Replaying the insertions in reverse is
- * therefore always a valid solution, which makes every generated jam
- * solvable-by-construction — the guarantee GDD §8 makes to the player
- * ("every jam solvable unaided, solver-verified, forever").
+ * This module owns where the street frontage opens and where walls, slicks,
+ * plates and one-ways go. Where the *cars* go is `forge.ts`, which builds the
+ * puzzle backwards from the empty lot and is the part that decides whether a
+ * jam is genuinely hard.
  *
- * Knot depth is *authored*, not hoped for: the first `knotDepth` insertions are
- * required to block the vehicle inserted just before them, which lays down an
- * explicit dependency chain. The rest are placed as blockers or distractors
- * according to the band's distractor ratio.
+ * ## What changed, and why it had to
+ *
+ * The previous generator inserted every vehicle at a spot it could drive
+ * straight off from, and then rejected any candidate lacking a pure exit-only
+ * solution. That made two guarantees at once, and the second was fatal:
+ *
+ * - solvability, which is worth keeping; and
+ * - that **no car ever needs repositioning**, which meant every level fell to
+ *   tapping whatever currently had a clear lane. Exits only free cells, so
+ *   driving one car off can never cost another its route: if an exit-only
+ *   solution exists, every exit order is a winning order.
+ *
+ * Measured over the shipped campaign, greedy cleared 320 of 320 levels across
+ * 8,320 runs, with a median 47% of cars able to leave on move one. The knot
+ * depth those levels reported was real, but nothing in the game ever asked the
+ * player to use it.
+ *
+ * Generation is now reject-and-retry against structural measurements
+ * (`analysis.ts`): build a candidate, work out how much of it falls to
+ * thoughtless tapping and how much repositioning its solution needs, and throw
+ * it away unless it clears its tier. Looking busy is not difficulty.
  */
 
+import {
+  analysePuzzle,
+  DifficultyTarget,
+  meetsTarget,
+  PuzzleMetrics,
+  targetPenalty,
+} from './analysis';
+import { forgeScrambled } from './forge';
 import { Rng } from './rng';
 import { analyseDifficulty, solveLevel } from './solver';
 import { createLotState, validateLevel } from './sim';
@@ -21,10 +44,9 @@ import {
   Band,
   BlockerStyle,
   Dir,
-  DX,
-  DY,
   ExitDef,
   LevelDef,
+  Move,
   Terrain,
   VEHICLE_LENGTH,
   VehicleDef,
@@ -78,6 +100,16 @@ export interface LevelSpec {
   /** Weighted length mix, e.g. { 2: 6, 3: 2, 4: 1 }. */
   lengthMix: Record<number, number>;
   modifiers: ModifierSpec;
+  /** Structural difficulty a candidate must satisfy to be accepted. */
+  target: DifficultyTarget;
+  /**
+   * Extra un-slides to attempt beyond the tier's requirement.
+   *
+   * Later construction can undo an earlier shift, and a full board simply runs
+   * out of room, so asking for exactly the requirement lands under it more
+   * often than not. The slack is what makes the requirement reachable.
+   */
+  scrambleSlack: number;
 }
 
 /* ------------------------------------------------------------------ *
@@ -92,10 +124,7 @@ interface Work {
   blockerStyle: number[];
   spin: number[];
   exits: ExitDef[];
-  occ: Int16Array;
   vehicles: VehicleDef[];
-  /** Cached forward ray of each placed vehicle: cell indices from nose to curb. */
-  rays: number[][];
 }
 
 function makeWork(w: number, h: number): Work {
@@ -107,87 +136,8 @@ function makeWork(w: number, h: number): Work {
     blockerStyle: new Array(w * h).fill(BlockerStyle.Cone),
     spin: new Array(w * h).fill(0),
     exits: [],
-    occ: new Int16Array(w * h).fill(-1),
     vehicles: [],
-    rays: [],
   };
-}
-
-const inW = (k: Work, x: number, y: number) => x >= 0 && y >= 0 && x < k.w && y < k.h;
-
-function hasExit(k: Work, x: number, y: number, dir: Dir): boolean {
-  for (const e of k.exits) if (e.x === x && e.y === y && e.dir === dir) return true;
-  return false;
-}
-
-/** Cells a vehicle with this nose/facing/length would occupy, or null if it does not fit. */
-function bodyCells(k: Work, x: number, y: number, facing: Dir, len: number): number[] | null {
-  const cells: number[] = [];
-  for (let i = 0; i < len; i++) {
-    const cx = x - DX[facing] * i;
-    const cy = y - DY[facing] * i;
-    if (!inW(k, cx, cy)) return null;
-    const idx = cy * k.w + cx;
-    if (k.terrain[idx] === Terrain.Blocked) return null;
-    if (k.occ[idx] !== -1) return null;
-    cells.push(idx);
-  }
-  return cells;
-}
-
-/**
- * Straight path from a nose cell to a curb cut, as cell indices *ahead* of the
- * nose (exclusive). Returns null when no clear route exists.
- */
-function exitRay(k: Work, x: number, y: number, facing: Dir, ignore = -1): number[] | null {
-  const path: number[] = [];
-  const limit = k.w + k.h;
-  for (let step = 1; step <= limit; step++) {
-    const cx = x + DX[facing] * step;
-    const cy = y + DY[facing] * step;
-    if (!inW(k, cx, cy)) {
-      const px = x + DX[facing] * (step - 1);
-      const py = y + DY[facing] * (step - 1);
-      return hasExit(k, px, py, facing) ? path : null;
-    }
-    const idx = cy * k.w + cx;
-    if (k.terrain[idx] === Terrain.Blocked) return null;
-    const arrow = k.arrows[idx];
-    if (arrow >= 0 && arrow !== facing) return null;
-    const occupant = k.occ[idx];
-    if (occupant !== -1 && occupant !== ignore) return null;
-    path.push(idx);
-  }
-  return null;
-}
-
-/** Same walk but tolerating vehicles: returns the ray plus who is standing on it. */
-function exitRayThroughVehicles(
-  k: Work,
-  x: number,
-  y: number,
-  facing: Dir,
-): { path: number[]; blockers: number[] } | null {
-  const path: number[] = [];
-  const blockers: number[] = [];
-  const limit = k.w + k.h;
-  for (let step = 1; step <= limit; step++) {
-    const cx = x + DX[facing] * step;
-    const cy = y + DY[facing] * step;
-    if (!inW(k, cx, cy)) {
-      const px = x + DX[facing] * (step - 1);
-      const py = y + DY[facing] * (step - 1);
-      return hasExit(k, px, py, facing) ? { path, blockers } : null;
-    }
-    const idx = cy * k.w + cx;
-    if (k.terrain[idx] === Terrain.Blocked) return null;
-    const arrow = k.arrows[idx];
-    if (arrow >= 0 && arrow !== facing) return null;
-    const occupant = k.occ[idx];
-    if (occupant !== -1 && !blockers.includes(occupant)) blockers.push(occupant);
-    path.push(idx);
-  }
-  return null;
 }
 
 /* ------------------------------------------------------------------ *
@@ -292,121 +242,6 @@ function scatterTerrain(k: Work, rng: Rng, spec: LevelSpec): void {
   }
 }
 
-/* ------------------------------------------------------------------ *
- * Vehicle insertion
- * ------------------------------------------------------------------ */
-
-interface Candidate {
-  x: number;
-  y: number;
-  facing: Dir;
-  cells: number[];
-  /** Previously-placed vehicles this candidate would stand in front of. */
-  blocks: number[];
-  /** Cells between this candidate's nose and its own curb cut. */
-  rayLen: number;
-}
-
-function collectCandidates(k: Work, len: number): Candidate[] {
-  const out: Candidate[] = [];
-  for (let y = 0; y < k.h; y++) {
-    for (let x = 0; x < k.w; x++) {
-      for (let f = 0 as Dir; f < 4; f = (f + 1) as Dir) {
-        const cells = bodyCells(k, x, y, f, len);
-        if (!cells) continue;
-        const ray = exitRay(k, x, y, f);
-        if (!ray) continue;
-        const blocks: number[] = [];
-        for (let vi = 0; vi < k.vehicles.length; vi++) {
-          const other = k.rays[vi];
-          for (const c of cells) {
-            if (other.includes(c)) {
-              blocks.push(vi);
-              break;
-            }
-          }
-        }
-        out.push({ x, y, facing: f, cells, blocks, rayLen: ray.length });
-      }
-    }
-  }
-  return out;
-}
-
-/**
- * For every car on the partial board, the length of the longest precedence
- * chain that *ends* at it — i.e. how deep the knot already is above that car.
- *
- * Parking a new vehicle in front of car `b` therefore yields a chain of
- * `heights[b] + 1`, which is what lets the generator deepen the knot from
- * whichever car happens to be reachable rather than from one designated tail.
- * Chasing a single tail stalls at three or four links, because each link starts
- * closer to the street than the one it blocks; scoring every candidate by the
- * depth it would actually create does not.
- *
- * The maximum entry is the current knot depth.
- */
-function chainHeights(k: Work): number[] {
-  const n = k.vehicles.length;
-  // waiters[b] = cars that cannot leave until b does.
-  const waiters: number[][] = Array.from({ length: n }, () => []);
-  for (let vi = 0; vi < n; vi++) {
-    const seen = new Set<number>();
-    for (const c of k.rays[vi]) {
-      const occupant = k.occ[c];
-      if (occupant !== -1 && occupant !== vi && !seen.has(occupant)) {
-        seen.add(occupant);
-        waiters[occupant].push(vi);
-      }
-    }
-  }
-
-  const colour = new Uint8Array(n);
-  const height = new Array<number>(n).fill(1);
-  const walk = (vi: number): number => {
-    if (colour[vi] === 2) return height[vi];
-    if (colour[vi] === 1) return 0;
-    colour[vi] = 1;
-    let best = 1;
-    for (const w of waiters[vi]) best = Math.max(best, walk(w) + 1);
-    height[vi] = best;
-    colour[vi] = 2;
-    return best;
-  };
-  for (let vi = 0; vi < n; vi++) walk(vi);
-  return height;
-}
-
-/** Pick randomly from the best few candidates — keeps lots varied but purposeful. */
-function chooseCandidate(
-  rng: Rng,
-  pool: Candidate[],
-  score: (c: Candidate) => number,
-  topK = 5,
-): Candidate {
-  let best: Candidate[] = [];
-  let bestScore = -Infinity;
-  const scored = pool.map((c) => ({ c, s: score(c) }));
-  scored.sort((a, b) => b.s - a.s);
-  for (const entry of scored) {
-    if (best.length >= topK && entry.s < bestScore) break;
-    if (entry.s > bestScore) bestScore = entry.s;
-    best.push(entry.c);
-    if (best.length >= topK) break;
-  }
-  if (best.length === 0) best = pool;
-  return best[rng.int(best.length)];
-}
-
-function commit(k: Work, rng: Rng, c: Candidate, len: number, tags: number): void {
-  const id = k.vehicles.length;
-  for (const idx of c.cells) k.occ[idx] = id;
-  const kind = kindForLength(len, tags, rng);
-  k.vehicles.push({ id, kind, x: c.x, y: c.y, facing: c.facing, tags, hue: rng.int(8) });
-  const ray = exitRayThroughVehicles(k, c.x, c.y, c.facing);
-  k.rays.push(ray ? ray.path : []);
-}
-
 function kindForLength(len: number, tags: number, rng: Rng): VehicleKind {
   if (tags & VehicleTag.Ambulance) return VehicleKind.Ambulance;
   switch (len) {
@@ -431,7 +266,14 @@ function pickLength(rng: Rng, mix: Record<number, number>): number {
  * Generation
  * ------------------------------------------------------------------ */
 
-function buildOnce(spec: LevelSpec, seed: number): LevelDef | null {
+/** A built candidate, carrying the solution its own construction proved. */
+export interface BuiltLevel {
+  level: LevelDef;
+  solution: Move[];
+  metrics: PuzzleMetrics;
+}
+
+function buildOnce(spec: LevelSpec, seed: number): BuiltLevel | null {
   const rng = new Rng(seed);
   const k = makeWork(spec.w, spec.h);
 
@@ -439,60 +281,11 @@ function buildOnce(spec: LevelSpec, seed: number): LevelDef | null {
   if (spec.modifiers.gate) placeGate(k, rng);
   scatterTerrain(k, rng, spec);
 
-  const total = spec.vehicleCount;
-  // VIPs must leave first, so under reverse construction they go in last.
-  const vipFrom = total - spec.modifiers.vips;
-  // Keep some insertions in reserve for distractors; the rest may chase depth.
-  const chainBudget = total - Math.round(total * spec.distractorRatio * 0.8);
+  const lengths: number[] = [];
+  for (let i = 0; i < spec.vehicleCount; i++) lengths.push(pickLength(rng, spec.lengthMix));
 
-  for (let i = 0; i < total; i++) {
-    const len = pickLength(rng, spec.lengthMix);
-    let candidates = collectCandidates(k, len);
-    if (candidates.length === 0 && len > 2) candidates = collectCandidates(k, 2);
-    if (candidates.length === 0) break;
-
-    const heights = i === 0 ? [] : chainHeights(k);
-    const currentDepth = heights.length ? Math.max(...heights) : 0;
-    const wantsDepth = i < chainBudget && currentDepth < spec.knotDepth;
-
-    let pool: Candidate[];
-    let score: (c: Candidate) => number;
-
-    if (i === 0) {
-      // Anchor the knot deep in the lot so the chain has room to grow.
-      pool = candidates;
-      score = (c) => c.rayLen;
-    } else if (wantsDepth) {
-      // Rank every placement by the knot depth it would actually produce, then
-      // break ties toward lanes with room left to grow into.
-      pool = candidates;
-      score = (c) => {
-        let gain = 1;
-        for (const b of c.blocks) gain = Math.max(gain, heights[b] + 1);
-        return gain * 12 + c.rayLen * 2 + c.blocks.length * 0.5;
-      };
-    } else if (rng.next() < spec.distractorRatio) {
-      // Distractors thicken the read without deepening it, so park them where
-      // they consume the least lane: nearest the street.
-      pool = candidates.filter((c) => c.blocks.length === 0);
-      score = (c) => -c.rayLen;
-    } else {
-      pool = candidates.filter((c) => c.blocks.length > 0);
-      score = (c) => c.blocks.length * 2 - c.rayLen;
-    }
-    if (pool.length === 0) pool = candidates;
-
-    const pick = chooseCandidate(rng, pool, score);
-    let tags = 0;
-    if (i >= vipFrom && spec.modifiers.vips > 0) tags |= VehicleTag.Vip;
-    commit(k, rng, pick, pick.cells.length, tags);
-  }
-
-  if (k.vehicles.length < 2) return null;
-
-  applyRoleTags(k, rng, spec);
-
-  const level: LevelDef = {
+  // The skeleton carries the board; the forge decides where the cars go.
+  const skeleton: LevelDef = {
     id: spec.id,
     index: spec.index,
     w: k.w,
@@ -502,8 +295,8 @@ function buildOnce(spec: LevelSpec, seed: number): LevelDef | null {
     blockerStyle: k.blockerStyle,
     roundaboutSpin: k.spin,
     exits: k.exits,
-    vehicles: k.vehicles,
-    parSlides: k.vehicles.length,
+    vehicles: [],
+    parSlides: 0,
     band: spec.band,
     patternTags: spec.patternTags,
     modifierLoad: countModifierFamilies(spec.modifiers),
@@ -511,14 +304,52 @@ function buildOnce(spec: LevelSpec, seed: number): LevelDef | null {
     seed,
   };
 
+  const forged = forgeScrambled(
+    {
+      level: skeleton,
+      lengths,
+      vips: spec.modifiers.vips,
+      scrambleTarget: spec.target.temporaryMoveRequirement + spec.scrambleSlack,
+      distractorRatio: spec.distractorRatio,
+      // Seal to the tier's own ceiling on how much may be free on move one.
+      sealTo: Math.floor(spec.target.maximumInitialExitShare * spec.vehicleCount),
+      // One ring is a proof the lot cannot be tapped out; more rings spread the
+      // proof around the board so greedy stalls early rather than near the end.
+      ringTarget: spec.target.maximumGreedyShare >= 1 ? 0 : spec.target.maximumGreedyShare <= 0.3 ? 3 : 2,
+    },
+    rng,
+  );
+  if (!forged || forged.placements.length < 2) return null;
+
+  const vehicles: VehicleDef[] = forged.placements.map((p, id) => ({
+    id,
+    kind: kindForLength(p.len, p.tags, rng),
+    x: p.x,
+    y: p.y,
+    facing: p.facing,
+    tags: p.tags,
+    hue: rng.int(8),
+  }));
+  k.vehicles = vehicles;
+
+  const level: LevelDef = {
+    ...skeleton,
+    vehicles,
+    parSlides: forged.solution.length,
+    solution: forged.solution,
+  };
+
+  // Role tags never change legality, so they go on once the puzzle is settled.
+  applyRoleTags(k, rng, spec);
+
   if (validateLevel(level).length > 0) return null;
 
-  const solved = solveLevel(level, { exitOnlyOnly: true });
-  if (!solved.solvable) return null;
-
-  level.parSlides = solved.parSlides;
-  level.knotDepth = analyseDifficulty(level, solved.moves).knotDepth;
-  return level;
+  // Branching is left out here: it is the expensive measure and generation
+  // never reads it. Reports and tests compute it on the handful of levels that
+  // actually ship.
+  const metrics = analysePuzzle(level, forged.solution, false);
+  level.knotDepth = metrics.dependencyDepth;
+  return { level, solution: forged.solution, metrics };
 }
 
 /** Ambulance and Mystery Trunk tags never affect legality, so they go on last. */
@@ -560,51 +391,26 @@ export interface GenerateOptions {
 }
 
 /**
- * What share of the lot may drive off on move one.
- *
- * Too few and the lot reads as a wall; too many and there is no read at all.
- * Breathers want a generous opening (goal-gradient candy), stretch jams want
- * the player to have to look for the thread. Measured as a *share*, because
- * four free cars out of eight and four out of twenty are nothing alike.
- */
-function opennessFit(open: number, band: Band, vehicles: number): number {
-  if (open === 0) return -14; // a lot with no legal first move is never shippable
-  if (vehicles === 0) return 0;
-  const [lo, hi] =
-    band === Band.Easy
-      ? [0.35, 0.9]
-      : band === Band.Hard
-        ? [0.12, 0.4]
-        : band === Band.Showcase
-          ? [0.15, 0.45]
-          : [0.2, 0.55];
-  const share = open / vehicles;
-  if (share < lo) return (share - lo) * 30;
-  if (share > hi) return (hi - share) * 20;
-  return 3;
-}
-
-/** Harder bands get more shots at the dice — a deep knot is a rarer roll. */
-/**
  * How many lots to build before keeping the best one.
  *
- * The knot a lot can hold is capped by its geometry, and a run that packs cells
- * with blockers and distractors leaves JamForge fewer valid insertions to chain
- * through — so a demanding spec needs more tries to find a build that actually
- * reaches its target depth, not just a build that is legal. Stretch and
- * showcase jams get the largest budget because they are the ones asking for
- * depth the board can only just deliver.
+ * A tier's structural requirements are a much narrower target than "is legal",
+ * so the harder bands need far more rolls. A miss is cheap — the expensive part
+ * of a build is the forge, and it bails early on a board with no room left.
  */
 function attemptsFor(spec: LevelSpec): number {
-  if (spec.band === Band.Showcase) return 96;
-  if (spec.band === Band.Hard) return 80;
-  if (spec.band === Band.Medium) return 48;
-  return 28;
+  if (spec.band === Band.Showcase) return 140;
+  if (spec.band === Band.Hard) return 120;
+  if (spec.band === Band.Medium) return 72;
+  return 36;
 }
 
 /**
  * Generate a level matching `spec` as closely as the board allows. Always
  * returns a valid, solvable level — never throws, never returns null.
+ *
+ * A candidate is accepted only when it satisfies every structural requirement
+ * of its tier. If no seed manages that, the closest miss ships rather than
+ * nothing: an under-target lot is a disappointment, an absent one is a crash.
  */
 export function generateLevel(spec: LevelSpec, opts: GenerateOptions = {}): LevelDef {
   const attempts = opts.attempts ?? attemptsFor(spec);
@@ -612,27 +418,19 @@ export function generateLevel(spec: LevelSpec, opts: GenerateOptions = {}): Leve
   let bestScore = -Infinity;
 
   for (let a = 0; a < attempts; a++) {
-    const level = buildOnce(spec, (spec.seed + a * 0x9e3779b1) >>> 0);
-    if (!level) continue;
+    const built = buildOnce(spec, (spec.seed + a * 0x9e3779b1) >>> 0);
+    if (!built) continue;
+    const { level, metrics } = built;
 
-    const metrics = analyseDifficulty(level);
-    const countScore = -Math.abs(level.vehicles.length - spec.vehicleCount) * 3;
-    // Overshooting the target depth is a bonus, not a miss.
-    const knotScore = Math.min(0, level.knotDepth - spec.knotDepth) * 5;
-    const distractorScore = -Math.abs(metrics.distractorRatio - spec.distractorRatio) * 6;
-    const opennessScore = opennessFit(metrics.openExits, spec.band, level.vehicles.length);
-    const score = countScore + knotScore + distractorScore + opennessScore;
+    // One car short is not worth rejecting a structurally sound lot over.
+    if (meetsTarget(metrics, spec.target) && level.vehicles.length >= spec.vehicleCount - 1) {
+      return level;
+    }
 
+    const score = targetPenalty(metrics, spec.target) - Math.abs(level.vehicles.length - spec.vehicleCount) * 3;
     if (score > bestScore) {
       bestScore = score;
       best = level;
-    }
-    if (
-      level.vehicles.length === spec.vehicleCount &&
-      level.knotDepth >= spec.knotDepth &&
-      opennessFit(metrics.openExits, spec.band, level.vehicles.length) > 0
-    ) {
-      return level;
     }
   }
 

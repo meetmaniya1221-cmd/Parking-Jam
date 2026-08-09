@@ -126,6 +126,16 @@ export interface LevelDef {
   knotDepth: number;
   /** Seed that produced the level, for reproducible regeneration. */
   seed: number;
+  /**
+   * A solution the generator proved while building the lot.
+   *
+   * Construction runs backwards, so reversing the build trace *is* a valid
+   * playthrough — this is that trace, kept rather than thrown away. It is not
+   * necessarily the shortest solution, but it is guaranteed to work, which
+   * makes it a free safety net: a lot can never ship unsolvable, and anything
+   * that needs "a way out from here" has one without running a search.
+   */
+  solution?: Move[];
 }
 
 /** Mutable per-attempt state. Vehicles are stored parallel-array style for cheap cloning. */

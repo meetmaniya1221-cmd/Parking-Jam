@@ -1166,6 +1166,11 @@ export class LotView {
     this.commit(move);
   }
 
+  /** The level being played. Read-only access for harnesses and hints. */
+  currentLevel(): LevelDef {
+    return this.level;
+  }
+
   /** True when no car can drive off the lot right now. */
   nothingCanLeave(): boolean {
     for (let vi = 0; vi < this.state.x.length; vi++) {

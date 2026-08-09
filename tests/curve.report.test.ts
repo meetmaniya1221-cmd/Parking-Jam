@@ -1,16 +1,19 @@
 /**
  * Not an assertion — a readout.
  *
- * Difficulty here is *requested* by `specForLevel` and *delivered* by JamForge,
- * and the two are not the same number: a lot can only knot as deep as its grid
- * and frontage allow. This prints what the generator actually produced, which
- * is the only honest way to tune the curve.
+ * Difficulty is *requested* by the spec and *delivered* by the generator, and
+ * the two are never the same number: a lot can only knot as deep, and be
+ * scrambled as hard, as its geometry allows. This prints what actually came
+ * out, which is the only honest way to tune.
  *
- * Run with: npx vitest run tests/curve.report.ts
+ * The column that matters most is `greedy`: the share of the lot a player can
+ * clear by tapping whatever currently has a clear lane, with no thought at all.
+ * Under the old generator that number was 1.00 on all 320 levels.
  */
 import { describe, it } from 'vitest';
 import { bandForLevel, getLevel, TOTAL_LEVELS } from '../src/core/campaign';
-import { analyseDifficulty, bumpLikelihood } from '../src/core/solver';
+import { analysePuzzle } from '../src/core/analysis';
+import { solveLevel } from '../src/core/solver';
 import { Band } from '../src/core/types';
 
 const BAND_NAME: Record<Band, string> = {
@@ -23,19 +26,22 @@ const BAND_NAME: Record<Band, string> = {
 describe('difficulty curve', () => {
   it('prints the delivered curve', () => {
     const rows: string[] = [];
-    rows.push('  lvl  band       grid   cars  depth  mods  bump');
+    rows.push('  lvl  band       grid   cars  moves  repos  depth  greedy  open  necks');
     const show = (i: number) => {
       const level = getLevel(i);
-      const m = analyseDifficulty(level);
+      const m = analysePuzzle(level, solveReference(i));
       rows.push(
         [
           String(i).padStart(5),
           BAND_NAME[level.band].padEnd(10),
           `${level.w}x${level.h}`.padStart(6),
-          String(level.vehicles.length).padStart(5),
-          String(m.knotDepth).padStart(6),
-          String(level.modifierLoad).padStart(5),
-          bumpLikelihood(level).toFixed(2).padStart(6),
+          String(m.vehicles).padStart(5),
+          String(m.solutionMoves).padStart(6),
+          String(m.repositionMoves).padStart(6),
+          String(m.dependencyDepth).padStart(6),
+          m.greedyShare.toFixed(2).padStart(7),
+          m.initialExitShare.toFixed(2).padStart(5),
+          String(m.bottleneckCells).padStart(6),
         ].join(' '),
       );
     };
@@ -43,49 +49,41 @@ describe('difficulty curve', () => {
     for (const i of [30, 40, 60, 80, 120, 180, 240, 320]) show(i);
     console.log('\n' + rows.join('\n'));
 
-    // Aggregate: what the player actually meets, band by band and era by era.
     const era = (from: number, to: number) => {
       let cars = 0;
       let depth = 0;
-      let bump = 0;
+      let greedy = 0;
+      let repos = 0;
+      let moves = 0;
+      let unbeaten = 0;
       for (let i = from; i <= to; i++) {
         const level = getLevel(i);
-        cars += level.vehicles.length;
-        depth += analyseDifficulty(level).knotDepth;
-        bump += bumpLikelihood(level);
+        const m = analysePuzzle(level, level.solution);
+        cars += m.vehicles;
+        depth += m.dependencyDepth;
+        greedy += m.greedyShare;
+        repos += m.repositionMoves;
+        moves += m.solutionMoves;
+        if (!m.greedySolves) unbeaten++;
       }
       const n = to - from + 1;
-      return `L${from}-${to}: ${(cars / n).toFixed(1)} cars, depth ${(depth / n).toFixed(2)}, bump ${(bump / n).toFixed(2)}`;
+      return `L${from}-${to}: ${(cars / n).toFixed(1)} cars, ${(moves / n).toFixed(1)} moves (${(repos / n).toFixed(1)} repositioning), depth ${(depth / n).toFixed(2)}, greedy clears ${(greedy / n).toFixed(2)}, greedy-proof ${unbeaten}/${n}`;
     };
     console.log(
       '\n' +
         [era(1, 9), era(10, 20), era(21, 40), era(41, 80), era(81, 160), era(161, 320)].join('\n'),
     );
 
-    // Band-isolated: breathers are deliberately shallow, so an all-bands average
-    // tracks how many breathers an era happens to contain more than it tracks
-    // the curve. Comparing stretch to stretch is the honest read.
-    const stretchEra = (from: number, to: number) => {
-      const depths: number[] = [];
-      let cars = 0;
-      for (let i = from; i <= to; i++) {
-        const level = getLevel(i);
-        if (level.band !== Band.Hard) continue;
-        depths.push(analyseDifficulty(level).knotDepth);
-        cars += level.vehicles.length;
-      }
-      if (!depths.length) return `L${from}-${to}: no stretch jams`;
-      const mean = depths.reduce((a, b) => a + b, 0) / depths.length;
-      return `L${from}-${to}: ${depths.length} stretch jams, depth ${mean.toFixed(2)}, ${(cars / depths.length).toFixed(1)} cars`;
-    };
+    let greedyProof = 0;
+    let totalRepos = 0;
+    for (let i = 1; i <= TOTAL_LEVELS; i++) {
+      const level = getLevel(i);
+      const m = analysePuzzle(level, level.solution);
+      if (!m.greedySolves) greedyProof++;
+      totalRepos += m.repositionMoves;
+    }
     console.log(
-      '\nstretch only:\n' +
-        [
-          stretchEra(10, 20),
-          stretchEra(21, 80),
-          stretchEra(81, 160),
-          stretchEra(161, 320),
-        ].join('\n'),
+      `\ngreedy-proof levels: ${greedyProof}/${TOTAL_LEVELS}  ·  mean repositioning moves ${(totalRepos / TOTAL_LEVELS).toFixed(2)}`,
     );
 
     const counts: Record<string, number> = {};
@@ -94,10 +92,18 @@ describe('difficulty curve', () => {
       counts[b] = (counts[b] ?? 0) + 1;
     }
     console.log(
-      '\nband mix: ' +
+      'band mix: ' +
         Object.entries(counts)
           .map(([k, v]) => `${k} ${((v / TOTAL_LEVELS) * 100).toFixed(0)}%`)
           .join('  '),
     );
-  }, 600_000);
+  }, 900_000);
 });
+
+/** The construction solution when the level carries one, else the solver's. */
+function solveReference(i: number) {
+  const level = getLevel(i);
+  if (level.solution && level.solution.length) return level.solution;
+  const res = solveLevel(level, { maxNodes: 200_000 });
+  return res.solvable ? res.moves : undefined;
+}

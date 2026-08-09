@@ -7,6 +7,7 @@
  * whole sequence is remote-config-shaped — every number here is a tunable.
  */
 
+import { DifficultyTarget } from './analysis';
 import { generateLevel, LevelSpec, ModifierSpec, NO_MODIFIERS } from './generator';
 import { hashString } from './rng';
 import { Band, LevelDef } from './types';
@@ -71,6 +72,15 @@ export function levelsInDistrict(district: number): number {
  * almost immediately, not one who wants a fortnight of tutorial.
  */
 const RAMP_ENDS = 10;
+
+/**
+ * Extra un-slides the forge attempts beyond a tier's requirement.
+ *
+ * Construction can undo its own earlier shifts and a filling board runs out of
+ * room, so aiming for exactly the requirement lands under it more often than
+ * not. Overshooting costs nothing: surplus repositioning is just a harder lot.
+ */
+const SCRAMBLE_SLACK = 4;
 
 /**
  * A 20-slot chapter template, weighted to stretch jams: the rhythm of
@@ -261,16 +271,24 @@ function gridForLevel(index: number, band: Band): Dimensions {
 function vehicleCountFor(index: number, band: Band, dims: Dimensions): number {
   let base: number;
   if (index < RAMP_ENDS) base = lerp(4, 8, (index - 1) / (RAMP_ENDS - 2));
-  else if (index <= 30) base = lerp(12, 15, (index - RAMP_ENDS) / 20);
-  else if (index <= 120) base = lerp(15, 19, (index - 30) / 90);
-  else base = lerp(19, 22, (index - 120) / 200);
+  else if (index <= 30) base = lerp(11, 13, (index - RAMP_ENDS) / 20);
+  else if (index <= 120) base = lerp(13, 14, (index - 30) / 90);
+  else base = lerp(14, 15, (index - 120) / 200);
 
   const bandAdjust =
     band === Band.Easy ? -1 : band === Band.Hard ? 2 : band === Band.Showcase ? 3 : 0;
   // Breathers carry MORE cars but a shallower knot — pure goal-gradient candy.
   const breatherBonus = band === Band.Easy && index >= RAMP_ENDS ? 3 : 0;
 
-  const capacity = Math.floor((dims.w * dims.h) / 3.2);
+  // Cars are capped well below what the lot could physically hold, and this is
+  // load-bearing rather than cosmetic. A puzzle is only hard if cars can be
+  // *repositioned*, and a lot packed to capacity leaves almost nobody able to
+  // slide at all — measured on a 7x10 lot, the share of generated levels that
+  // resist thoughtless tapping runs 75-100% up to eighteen cars and collapses
+  // to about 12% at twenty. Past that point extra cars do not add difficulty,
+  // they remove it, and the generator ends up shipping whatever near-miss it
+  // could manage. Room to manoeuvre is a resource the puzzle spends.
+  const capacity = Math.floor((dims.w * dims.h) / 4.4);
   return Math.max(3, Math.min(capacity, Math.round(base) + bandAdjust + breatherBonus));
 }
 
@@ -302,6 +320,85 @@ function distractorRatioFor(index: number, band: Band): number {
   const base =
     index < RAMP_ENDS ? 0.2 : Math.min(0.6, lerp(0.42, 0.6, (index - RAMP_ENDS) / 110));
   return band === Band.Easy ? Math.min(0.65, base + 0.1) : base;
+}
+
+/* ------------------------------------------------------------------ *
+ * Structural difficulty tiers
+ * ------------------------------------------------------------------ */
+
+/**
+ * What a lot has to *be*, as opposed to how much of it there is.
+ *
+ * These are the requirements the generator rejects against, and they are the
+ * whole answer to "the levels are too easy". Car count is not on the list on
+ * purpose: a board can be packed and still fall apart the moment the player
+ * taps whatever has a clear lane, which is exactly what the old generator
+ * produced.
+ *
+ * The two that carry the most weight:
+ *
+ * - `maximumGreedyShare` — how much of the lot a player can clear with no
+ *   thought at all, by repeatedly tapping any car that can currently leave.
+ *   Below 1.0 this is a hard promise that the lot *cannot* be finished that
+ *   way; the player has to reposition something.
+ * - `temporaryMoveRequirement` — how many moves the solution spends making
+ *   room rather than clearing a car. This was structurally zero for every
+ *   level the old generator could produce.
+ */
+export function targetForLevel(index: number, band: Band, vehicles: number): DifficultyTarget {
+  // The tutorial keeps its promise of a gentle read: greedy is allowed to win.
+  if (index <= 3) {
+    return {
+      dependencyDepth: 2,
+      minimumSolutionMoves: 0,
+      temporaryMoveRequirement: 0,
+      maximumInitialExitShare: 1,
+      maximumGreedyShare: 1,
+      maximumIsolatedShare: 1,
+      minimumBottlenecks: 0,
+    };
+  }
+
+  // The on-ramp teaches that a car sometimes has to move without leaving,
+  // which is the single most important idea in the game.
+  if (index < RAMP_ENDS) {
+    return {
+      dependencyDepth: Math.min(4, 2 + Math.floor((index - 3) / 2)),
+      minimumSolutionMoves: vehicles + 1,
+      temporaryMoveRequirement: 1,
+      maximumInitialExitShare: 0.5,
+      maximumGreedyShare: 0.85,
+      maximumIsolatedShare: 0.45,
+      minimumBottlenecks: 2,
+    };
+  }
+
+  const t = Math.min(1, (index - RAMP_ENDS) / 150);
+  // `open` and `iso` are held at the design brief's own numbers — no more than
+  // about a quarter of the lot free on move one, and no more than a fifth of it
+  // standing in nobody's way. Tightening them further was a mistake: they are
+  // *descriptions* of a hard lot, and squeezing them starved the one gate that
+  // actually matters (that the lot cannot be tapped out) of candidates to pick
+  // from, so the generator ended up shipping near-misses instead.
+  const byBand = {
+    [Band.Easy]: { greedy: 0.6, temp: 2, open: 0.4, iso: 0.32, neck: 4 },
+    [Band.Medium]: { greedy: 0.45, temp: 4, open: 0.3, iso: 0.24, neck: 6 },
+    [Band.Hard]: { greedy: 0.3, temp: 6, open: 0.25, iso: 0.2, neck: 8 },
+    [Band.Showcase]: { greedy: 0.25, temp: 7, open: 0.22, iso: 0.18, neck: 9 },
+  }[band];
+
+  // Late levels ask for more repositioning than early ones at the same band.
+  const temp = byBand.temp + Math.round(t * 3);
+
+  return {
+    dependencyDepth: knotDepthFor(index, band, vehicles),
+    minimumSolutionMoves: vehicles + temp,
+    temporaryMoveRequirement: temp,
+    maximumInitialExitShare: byBand.open,
+    maximumGreedyShare: byBand.greedy,
+    maximumIsolatedShare: byBand.iso,
+    minimumBottlenecks: byBand.neck,
+  };
 }
 
 function lengthMixFor(index: number): Record<number, number> {
@@ -472,6 +569,8 @@ export function specForLevel(index: number): LevelSpec {
     distractorRatio: distractorRatioFor(index, band),
     lengthMix: lengthMixFor(index),
     modifiers: modifiersFor(index, band, pattern.tag, dims),
+    target: targetForLevel(index, band, vehicleCount),
+    scrambleSlack: SCRAMBLE_SLACK,
   };
 
   const override = TUTORIAL_SPECS[index];
@@ -544,6 +643,8 @@ export function overtimeSet(dayNumber: number, count = 10): OvertimeJam[] {
       distractorRatio: 0.45,
       lengthMix: { 2: 5, 3: 3, 4: 2, 5: 1 },
       modifiers: modifiersFor(120 + i * 6, band, pattern.tag, dims),
+      target: targetForLevel(120 + i * 6, band, count),
+      scrambleSlack: SCRAMBLE_SLACK,
     };
     out.push({ level: generateLevel(spec), tag: pattern.label });
   }
@@ -570,6 +671,8 @@ export function rushHourJam(dayNumber: number): LevelDef {
     distractorRatio: 0.45,
     lengthMix: { 2: 5, 3: 3, 4: 2 },
     modifiers: modifiersFor(140, Band.Hard, pattern.tag, dims),
+    target: targetForLevel(140, Band.Hard, 16),
+    scrambleSlack: SCRAMBLE_SLACK,
   };
   return generateLevel(spec);
 }
@@ -615,6 +718,8 @@ export function gauntletJam(period: string, index: number): LevelDef {
     distractorRatio: 0.45,
     lengthMix: rung < 4 ? { 2: 6, 3: 2 } : { 2: 5, 3: 3, 4: 2 },
     modifiers: modifiersFor(60 + rung * 12, band, pattern.tag, dims),
+    target: targetForLevel(60 + rung * 12, band, vehicleCount),
+    scrambleSlack: SCRAMBLE_SLACK,
   };
   return generateLevel(spec);
 }
