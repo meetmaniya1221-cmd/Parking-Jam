@@ -177,6 +177,17 @@ export class LotView {
   private keyboardVi = 0;
   private rideIndex = 0;
   private keyboardFocused = false;
+  /**
+   * Signature of the last refused push, or null.
+   *
+   * Bumps are already discrete here — a car snaps to a cell and a bump is one
+   * released gesture, never a per-frame contact — but leaning on a blocker and
+   * shoving repeatedly should still read as *one* collision. This records who
+   * pushed, which way, and against what, and is cleared the moment anything
+   * actually moves. Same push, nothing changed in between: feedback plays, the
+   * counter holds.
+   */
+  private lastBumpKey: string | null = null;
 
   constructor(
     canvas: HTMLCanvasElement,
@@ -251,6 +262,7 @@ export class LotView {
     this.anims = this.buildAnims();
     this.rideIndex = this.pickRideIndex();
     this.history = [];
+    this.lastBumpKey = null;
     this.particles.length = 0;
     this.hintIds = [];
     this.preview = null;
@@ -715,6 +727,8 @@ export class LotView {
   undo(): boolean {
     const entry = this.history.pop();
     if (!entry) return false;
+    // Stepping back changes the board, so the next push is a fresh collision.
+    this.lastBumpKey = null;
     this.cancelDrag();
     this.state.x.set(entry.x);
     this.state.y.set(entry.y);
@@ -747,6 +761,8 @@ export class LotView {
   }
 
   private commit(move: Move): void {
+    // Something moved, so the board is no longer the one that refused.
+    this.lastBumpKey = null;
     this.pushHistory();
     const vi = move.vi;
     const anim = this.anims[vi];
@@ -820,7 +836,14 @@ export class LotView {
     const anim = this.anims[vi];
     anim.squash = 1;
     anim.wobbleTime = WOBBLE_MS;
-    this.state.bumps++;
+
+    // Same car, same direction, same refusing blocker, same spot, and nothing
+    // has moved since: that is the player still leaning on a collision they
+    // have already been charged for.
+    const key = `${vi}:${dir}:${p.block.blockerVi}:${this.state.x[vi]},${this.state.y[vi]}`;
+    const repeat = key === this.lastBumpKey;
+    this.lastBumpKey = key;
+    if (!repeat) this.state.bumps++;
 
     const shape = this.hornFor(vi);
     this.audio.bump(shape.shape, shape.freq);
@@ -1120,6 +1143,12 @@ export class LotView {
   private collectVehicleViews(): VehicleView[] {
     const out: VehicleView[] = [];
     const rideIdx = this.rideIndex;
+    // One breath shared by every VIP, so they beat together rather than
+    // shimmering out of phase. Reduced motion holds it steady — the halo and
+    // badge still identify the car without anything moving.
+    const pulse = this.view.settings.reducedMotion
+      ? 0.5
+      : 0.5 + Math.sin(performance.now() / 520) * 0.5;
     for (let i = 0; i < this.state.x.length; i++) {
       const a = this.anims[i];
       if (a.alpha <= 0.001 && this.state.gone[i]) continue;
@@ -1156,6 +1185,7 @@ export class LotView {
         hint: a.hint,
         flash: a.flash,
         isRide: i === rideIdx,
+        pulse,
       });
     }
     return out;

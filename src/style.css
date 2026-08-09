@@ -902,6 +902,44 @@ body {
 .play__bumps {
   font-size: 0.8em;
   color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+  padding: 2px 8px;
+  border-radius: 999px;
+  transition:
+    color 160ms ease,
+    background 160ms ease;
+}
+
+/* One bump used: a nudge, not an alarm. */
+.play__bumps--warn {
+  color: var(--lemon);
+  background: rgba(255, 209, 102, 0.14);
+}
+
+/* Two used, one left. This is the last quiet moment before the jam is lost, so
+   it is allowed to be loud — and it keeps pulsing rather than flashing once,
+   because the player may look up at any point. */
+.play__bumps--danger {
+  color: var(--coral-light);
+  background: rgba(255, 111, 97, 0.18);
+  font-weight: 700;
+  animation: bump-danger 1.1s ease-in-out infinite;
+}
+
+@keyframes bump-danger {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.62;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .play__bumps--danger {
+    animation: none;
+  }
 }
 
 .ambulance {

@@ -141,6 +141,8 @@ export interface VehicleView {
   flash: number;
   /** True for the player's equipped Ride. */
   isRide: boolean;
+  /** 0–1 breathing value driving the VIP marker. Shared so every VIP beats together. */
+  pulse: number;
 }
 
 export interface PathPreview {
@@ -964,6 +966,9 @@ export function drawVehicle(
   }
 
   drawStateRing(ctx, v, x0, y0, bw, bh, hpx, leanPx, leanPy, cw, palette);
+  if (v.tags & VehicleTag.Vip) {
+    drawVipMarker(ctx, v, x0, y0, bw, bh, hpx, leanPx, leanPy, cw, ch, palette);
+  }
   ctx.restore();
 }
 
@@ -1455,6 +1460,127 @@ function drawStateRing(
   ctx.lineWidth = Math.max(2.5, cw * 0.06) * (1 + strength * 0.4);
   roundRect(ctx, tx, ty, tw, th, radius);
   ctx.stroke();
+}
+
+/**
+ * The VIP treatment: a breathing halo and a badge above the roof.
+ *
+ * The VIP has to be findable in a second, in a lot of fifteen cars, without
+ * shouting loudly enough to spoil the look. So it gets three cues that stack —
+ * a soft halo, a bright ring, and a badge — and the halo *breathes* rather than
+ * blinking, because motion is what the eye catches first in a still image.
+ *
+ * Drawn live rather than baked into the cached sprite, since it animates, and
+ * drawn from the vehicle's own screen box so it follows the car for free and
+ * reads the same whichever way the car faces. It is pure decoration: nothing
+ * here touches occupancy, so it cannot affect what can move where.
+ */
+function drawVipMarker(
+  ctx: CanvasRenderingContext2D,
+  v: VehicleView,
+  x0: number,
+  y0: number,
+  bw: number,
+  bh: number,
+  hpx: number,
+  leanPx: number,
+  leanPy: number,
+  cw: number,
+  ch: number,
+  palette: Palette,
+): void {
+  const unit = Math.min(bw, bh);
+  const bevelX = BEVEL * unit;
+  const bevelY = BEVEL * unit * CELL_ASPECT;
+  const radius = unit * 0.26;
+  const tx = x0 + bevelX + leanPx;
+  const ty = y0 + bevelY - hpx * BODY_SHARE + leanPy;
+  const tw = bw - bevelX * 2;
+  const th = bh - bevelY * 2;
+
+  // 0 at rest, 1 at the top of the breath.
+  const beat = v.pulse;
+
+  ctx.save();
+  // Halo: wide, soft, additive, so it glows rather than outlines.
+  ctx.globalCompositeOperation = 'lighter';
+  const spread = cw * (0.16 + beat * 0.1);
+  for (let i = 3; i >= 1; i--) {
+    ctx.strokeStyle = withAlpha(palette.lemon, (0.05 + beat * 0.05) * i);
+    ctx.lineWidth = (spread * i) / 3;
+    roundRect(ctx, tx, ty, tw, th, radius);
+    ctx.stroke();
+  }
+  ctx.restore();
+
+  // A crisp gold ring so the VIP still reads in high-contrast and colourblind
+  // modes, where a soft glow alone would wash out.
+  ctx.strokeStyle = withAlpha(palette.lemon, 0.85 + beat * 0.15);
+  ctx.lineWidth = Math.max(2, cw * 0.055);
+  roundRect(ctx, tx, ty, tw, th, radius);
+  ctx.stroke();
+
+  // Badge above the roof. Anchored to the top of the body box, so it sits clear
+  // of the car whichever way it faces and never covers a neighbouring cell's
+  // contents at the bottom of the lot.
+  const badgeH = ch * 0.34;
+  const badgeW = Math.max(cw * 0.62, badgeH * 1.9);
+  const bx = tx + tw / 2 - badgeW / 2;
+  const by = ty - badgeH - ch * (0.1 + beat * 0.05);
+
+  ctx.fillStyle = withAlpha(palette.ink, 0.35);
+  roundRect(ctx, bx + cw * 0.02, by + ch * 0.03, badgeW, badgeH, badgeH / 2);
+  ctx.fill();
+
+  const skin = ctx.createLinearGradient(bx, by, bx, by + badgeH);
+  skin.addColorStop(0, shade(palette.lemon, 0.22));
+  skin.addColorStop(1, shade(palette.lemon, -0.12));
+  ctx.fillStyle = skin;
+  roundRect(ctx, bx, by, badgeW, badgeH, badgeH / 2);
+  ctx.fill();
+  ctx.strokeStyle = withAlpha(palette.ink, 0.45);
+  ctx.lineWidth = Math.max(1, cw * 0.016);
+  roundRect(ctx, bx, by, badgeW, badgeH, badgeH / 2);
+  ctx.stroke();
+
+  // "VIP" in ink. Shape-coded as well as coloured: a star sits alongside so the
+  // badge is not carrying its meaning in gold alone.
+  ctx.fillStyle = palette.ink;
+  ctx.font = `700 ${Math.round(badgeH * 0.62)}px system-ui, sans-serif`;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText('VIP', bx + badgeW * 0.58, by + badgeH * 0.54);
+  drawStar(ctx, bx + badgeW * 0.22, by + badgeH * 0.5, badgeH * 0.3, palette.ink);
+
+  // A little pointer joining badge to roof, so the two read as one object.
+  ctx.fillStyle = shade(palette.lemon, -0.12);
+  ctx.beginPath();
+  ctx.moveTo(tx + tw / 2 - badgeH * 0.18, by + badgeH - 1);
+  ctx.lineTo(tx + tw / 2 + badgeH * 0.18, by + badgeH - 1);
+  ctx.lineTo(tx + tw / 2, by + badgeH + ch * 0.09);
+  ctx.closePath();
+  ctx.fill();
+}
+
+function drawStar(
+  ctx: CanvasRenderingContext2D,
+  cx: number,
+  cy: number,
+  r: number,
+  colour: string,
+): void {
+  ctx.fillStyle = colour;
+  ctx.beginPath();
+  for (let i = 0; i < 10; i++) {
+    const angle = -Math.PI / 2 + (i * Math.PI) / 5;
+    const rad = i % 2 === 0 ? r : r * 0.45;
+    const px = cx + Math.cos(angle) * rad;
+    const py = cy + Math.sin(angle) * rad;
+    if (i === 0) ctx.moveTo(px, py);
+    else ctx.lineTo(px, py);
+  }
+  ctx.closePath();
+  ctx.fill();
 }
 
 /* ------------------------------------------------------------------ *

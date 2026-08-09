@@ -75,8 +75,18 @@ const MODE_PLACE: Record<Exclude<PlayMode, 'campaign'>, string> = {
 };
 
 const AMBULANCE_WINDOW_MS = 30_000;
+/**
+ * Bumps allowed before the jam is failed.
+ *
+ * This is a deliberate reversal of the original design, where a bump was free
+ * and diagnostic. Three strikes makes every push a decision, which is the point
+ * — but it also means the help has to arrive *before* the third one, hence the
+ * Dispatcher pulse below moving down with it.
+ */
+const BUMP_LIMIT = 3;
+
 /** Dispatcher pulses after this many bumps inside the window (GDD §17 test #6). */
-const PULSE_BUMPS = 6;
+const PULSE_BUMPS = 2;
 const PULSE_WINDOW_MS = 30_000;
 const INTERSTITIAL_COOLDOWN_MS = 90_000;
 const INTERSTITIAL_SESSION_CAP = 12;
@@ -108,6 +118,7 @@ export class PlayScreen {
   private startedAt = 0;
   private elapsedBeforePause = 0;
   private bumpTimes: number[] = [];
+  private failed = false;
   private ambulanceDeadline = 0;
   private ambulancesRescued = 0;
   private trunksBanked: number[] = [];
@@ -393,6 +404,14 @@ export class PlayScreen {
   private restart(): void {
     if (!this.view) return;
     this.audio.uiTap();
+    // setLevel rebuilds the lot state from the level definition, so every car
+    // returns to its authored position and facing, bumps and slides go back to
+    // zero, undo history is dropped and the bump-debounce key is cleared. The
+    // VIP marker follows from the rebuilt state, so it comes back with it.
+    this.failed = false;
+    this.outOfMoves = false;
+    this.view.setInteractive(true);
+    this.setPaused(false);
     this.view.setLevel(this.level);
     this.view.setContext(this.viewContext());
     this.startedAt = performance.now();
@@ -427,6 +446,13 @@ export class PlayScreen {
     this.counterNode.classList.toggle('counter--near', remaining <= 5 && remaining > 0);
     this.counterNode.classList.toggle('counter--final', remaining <= 3 && remaining > 0);
     this.bumpNode.textContent = state.bumps === 1 ? '1 bump' : `${state.bumps} bumps`;
+    // The counter earns its colour: nothing at zero, a nudge at one, and a
+    // clear "one left" at two. Updated here, which runs on every state change,
+    // so it never lags the collision that caused it.
+    this.bumpNode.classList.toggle('play__bumps--warn', state.bumps === BUMP_LIMIT - 2);
+    this.bumpNode.classList.toggle('play__bumps--danger', state.bumps >= BUMP_LIMIT - 1);
+    this.bumpNode.title =
+      state.bumps >= BUMP_LIMIT - 1 ? 'One more bump fails the jam' : 'Bumps used';
 
     const band = this.level.band;
     this.titleNode.textContent = this.title;
@@ -513,6 +539,14 @@ export class PlayScreen {
     this.bumpTimes.push(now);
     this.bumpTimes = this.bumpTimes.filter((t) => now - t < PULSE_WINDOW_MS);
 
+    // The third bump ends the jam here and now, before any other feedback gets
+    // a chance to queue behind it. `onBump` fires from inside the view's own
+    // commit path, so this runs in the same turn as the collision itself.
+    if (!this.failed && this.view && this.view.state.bumps >= BUMP_LIMIT) {
+      this.failByBumps();
+      return;
+    }
+
     if (reason === BlockReason.VelvetRope) {
       toast('The VIP leaves first.', '⭐');
     } else if (reason === BlockReason.OneWay) {
@@ -527,6 +561,32 @@ export class PlayScreen {
       window.setTimeout(() => dispatcher?.node.classList.remove('booster--pulse'), 6000);
       this.bumpTimes = [];
     }
+  }
+
+  /**
+   * Freeze the jam and offer a retry.
+   *
+   * Input is disabled first and everything else follows, so there is no window
+   * in which a fourth bump can land or a car can still be dragged behind the
+   * overlay. The sheet cannot be dismissed into a dead board: retry is the only
+   * way out, and it goes through the same restart the header button uses.
+   */
+  private failByBumps(): void {
+    if (this.failed || !this.view) return;
+    this.failed = true;
+    this.view.setInteractive(false);
+    this.view.setHints([]);
+    this.setPaused(true);
+    this.audio.uiTap();
+
+    showSheet({
+      eyebrow: 'Level failed',
+      title: '💥 3 bumps',
+      body: 'Too many collisions. The jam resets — same lot, fresh start.',
+      confirmLabel: 'Retry',
+      onConfirm: () => this.restart(),
+      onDismiss: () => this.restart(),
+    });
   }
 
   private onLastCar(): void {
@@ -544,7 +604,9 @@ export class PlayScreen {
    * peak motivation, and declining it never ends the session on a loss.
    */
   private async onOutOfMoves(): Promise<void> {
-    if (!this.view || this.finished || this.outOfMoves) return;
+    // A jam lost to bumps is already over; the Metered save-me must not stack on
+    // top of the failure sheet.
+    if (!this.view || this.finished || this.outOfMoves || this.failed) return;
     this.outOfMoves = true;
     this.view.setInteractive(false);
     this.audio.softMiss();
