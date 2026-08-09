@@ -113,6 +113,9 @@ export interface Camera {
   oy: number;
   cw: number;
   ch: number;
+  /** Lot size in cells. Lets an effect know where the asphalt ends. */
+  cols: number;
+  rows: number;
 }
 
 export interface VehicleView {
@@ -139,6 +142,8 @@ export interface VehicleView {
   hint: number;
   /** 0–1 blocker flash: "this is the car that said no". */
   flash: number;
+  /** 0–1 breath on the VIP halo and crown. Ignored on every other car. */
+  vipPulse: number;
   /** True for the player's equipped Ride. */
   isRide: boolean;
 }
@@ -159,7 +164,9 @@ export interface Particle {
   maxLife: number;
   size: number;
   color: string;
-  kind: 'dust' | 'confetti' | 'spark' | 'ring';
+  kind: 'dust' | 'confetti' | 'spark' | 'ring' | 'star';
+  /** Radians, for kinds that have an orientation. */
+  spin?: number;
 }
 
 /* ------------------------------------------------------------------ *
@@ -223,6 +230,8 @@ export function fitCamera(
     oy: (heightPx - boardH) / 2,
     cw,
     ch,
+    cols: level.w,
+    rows: level.h,
     overflow: boardW > availableW + 0.5 || boardH > availableH + 0.5,
     fitCw,
   };
@@ -382,29 +391,44 @@ function drawKerb(
   const { cw, ch, ox, oy } = cam;
   const w = level.w * cw;
   const h = level.h * ch;
-  const lip = cw * 0.2;
-  const apron = cw * 0.42;
+  const lip = cw * 0.22;
+  const apron = cw * 0.46;
 
   // Street beyond the kerb. No grain pass here: the kerb and slab cover all but
   // a few pixels of it, and stamping the pattern over the whole footprint just
   // to have it overdrawn is the single most expensive thing in this bake.
-  ctx.fillStyle = shade(palette.asphaltDeep, -0.18);
-  roundRect(ctx, ox - apron, oy - apron, w + apron * 2, h + apron * 2, cw * 0.36);
+  ctx.fillStyle = shade(palette.asphaltDeep, -0.34);
+  roundRect(ctx, ox - apron, oy - apron, w + apron * 2, h + apron * 2, cw * 0.4);
   ctx.fill();
 
-  // The kerb face, dropped down-screen so the lip reads as a solid edge.
-  ctx.fillStyle = shade(palette.sand, -0.66);
-  roundRect(ctx, ox - lip, oy - lip + ch * 0.08, w + lip * 2, h + lip * 2, cw * 0.2);
+  // The kerb face, dropped down-screen so the lip reads as a solid edge. Deeper
+  // than the top by a wide margin: the whole read of a raised frame is that one
+  // value step, and halving it makes the board look printed on.
+  ctx.fillStyle = shade(palette.sand, -0.72);
+  roundRect(ctx, ox - lip, oy - lip + ch * 0.12, w + lip * 2, h + lip * 2, cw * 0.24);
   ctx.fill();
 
-  // Kerb top: weathered concrete, not fresh cream. It frames the lot, so it has
-  // to stay quieter than every car standing on it.
-  const top = ctx.createLinearGradient(ox, oy - lip, ox, oy + h + lip);
-  top.addColorStop(0, shade(palette.sand, -0.3));
-  top.addColorStop(1, shade(palette.sand, -0.5));
+  // Kerb top: warm weathered stone, lit from the upper left like everything
+  // else. It frames the lot, so it stays quieter than every car standing on it
+  // while still reading as a real object with a top and a side.
+  const top = ctx.createLinearGradient(ox - lip, oy - lip, ox + w * 0.35, oy + h + lip);
+  top.addColorStop(0, shade(palette.sand, -0.16));
+  top.addColorStop(0.5, shade(palette.sand, -0.34));
+  top.addColorStop(1, shade(palette.sand, -0.54));
   ctx.fillStyle = top;
-  roundRect(ctx, ox - lip, oy - lip, w + lip * 2, h + lip * 2, cw * 0.2);
+  roundRect(ctx, ox - lip, oy - lip, w + lip * 2, h + lip * 2, cw * 0.24);
   ctx.fill();
+
+  // A hairline of catch-light along the top inner edge, and a shadow the slab
+  // casts onto the frame below it. Two strokes, and the frame gains a bevel.
+  ctx.strokeStyle = withAlpha(palette.cream, 0.22);
+  ctx.lineWidth = Math.max(1, cw * 0.03);
+  roundRect(ctx, ox - lip * 0.5, oy - lip * 0.5, w + lip, h + lip, cw * 0.2);
+  ctx.stroke();
+  ctx.strokeStyle = withAlpha(palette.ink, 0.5);
+  ctx.lineWidth = Math.max(1, cw * 0.06);
+  roundRect(ctx, ox - cw * 0.02, oy - ch * 0.02, w + cw * 0.04, h + ch * 0.04, cw * 0.17);
+  ctx.stroke();
 }
 
 /** Stamp the asphalt aggregate over a rect, tied to cell size so it holds density at any zoom. */
@@ -614,6 +638,57 @@ function drawCurbCut(
   // A lit top edge so the apron reads as a raised threshold, not a decal.
   ctx.fillStyle = withAlpha(palette.cream, 0.3);
   ctx.fillRect(x, y, horizontal ? width : thickness * 0.22, horizontal ? thickness * 0.22 : height);
+  ctx.restore();
+
+  drawExitChevrons(ctx, run, cam, palette);
+}
+
+/**
+ * Chevrons pointing out through the opening.
+ *
+ * The hazard apron says "something happens here"; the chevrons say *which way*.
+ * On a lot with frontage on all four sides that is not a nicety — a player
+ * scanning for where a given lane leads needs the direction readable from the
+ * kerb itself, without tracing the lane back to a car's facing.
+ */
+function drawExitChevrons(
+  ctx: CanvasRenderingContext2D,
+  run: { dir: Dir; from: number; to: number; fixed: number },
+  cam: Camera,
+  palette: Palette,
+): void {
+  const { cw, ch, ox, oy } = cam;
+  if (cw < 22) return; // below this a chevron is three grey pixels
+
+  const horizontal = run.dir === 0 || run.dir === 2;
+  const outward = run.dir === 0 || run.dir === 3 ? -1 : 1;
+  const size = Math.min(cw, ch) * 0.2;
+  // One chevron per lane, and quiet. A double chevron on every cell of a
+  // four-sided frontage turns the rim of the lot into a wall of arrows, which
+  // is louder than the cars — and the cars are the puzzle.
+  ctx.save();
+  ctx.strokeStyle = withAlpha(palette.cream, 0.4);
+  ctx.lineWidth = Math.max(1.2, size * 0.3);
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+
+  for (let i = run.from; i <= run.to; i++) {
+    const cx = horizontal ? ox + (i + 0.5) * cw : ox + (run.fixed + 0.5) * cw;
+    const cy = horizontal ? oy + (run.fixed + 0.5) * ch : oy + (i + 0.5) * ch;
+    ctx.beginPath();
+    if (horizontal) {
+      const tipY = cy + outward * size * 0.62;
+      ctx.moveTo(cx - size * 0.68, tipY - outward * size * 0.62);
+      ctx.lineTo(cx, tipY);
+      ctx.lineTo(cx + size * 0.68, tipY - outward * size * 0.62);
+    } else {
+      const tipX = cx + outward * size * 0.62;
+      ctx.moveTo(tipX - outward * size * 0.62, cy - size * 0.68);
+      ctx.lineTo(tipX, cy);
+      ctx.lineTo(tipX - outward * size * 0.62, cy + size * 0.68);
+    }
+    ctx.stroke();
+  }
   ctx.restore();
 }
 
@@ -997,6 +1072,11 @@ export function drawVehicle(
   const padR = cw * 0.3;
   const padB = ch * 0.36;
 
+  // The VIP's halo sits *under* the car, so the car stays the brightest thing
+  // inside it. Drawn live rather than into the sprite because it breathes.
+  const marked = (v.tags & VehicleTag.Vip) !== 0 && v.alpha > 0.98;
+  if (marked) drawVipHalo(ctx, cam, x0, y0, bw, bh, hpx, v.vipPulse, palette);
+
   if (still) {
     const cached = sprite(spriteKey(v, bw, bh, hpx), bw + padL + padR, bh + padT + padB, dpr, (sctx) => {
       paintVehicle(sctx, v, padL, padT, bw, bh, hpx, 0, 0, palette);
@@ -1008,6 +1088,114 @@ export function drawVehicle(
   }
 
   drawStateRing(ctx, v, x0, y0, bw, bh, hpx, leanPx, leanPy, cw, palette);
+  if (marked) drawVipCrest(ctx, cam, x0, y0, bw, bh, hpx, v.vipPulse, palette);
+  ctx.restore();
+}
+
+/**
+ * The VIP's golden ground glow.
+ *
+ * A VIP has to be findable in under two seconds in a lot of thirty-two cars,
+ * and it has to stay findable when it is also selected, also hinted, and also
+ * the car that just refused to move. So it does not compete for the ring — the
+ * ring belongs to interaction state. It takes the *ground*: a warm pool of
+ * light under the car that nothing else in the game produces, and a slow breath
+ * that catches the eye without ever flashing.
+ */
+function drawVipHalo(
+  ctx: CanvasRenderingContext2D,
+  cam: Camera,
+  x0: number,
+  y0: number,
+  bw: number,
+  bh: number,
+  hpx: number,
+  pulse: number,
+  palette: Palette,
+): void {
+  const cx = x0 + bw / 2;
+  const cy = y0 + bh / 2 - hpx * 0.2;
+  const reach = Math.max(bw, bh) * (0.66 + pulse * 0.08);
+  const glow = ctx.createRadialGradient(cx, cy, reach * 0.18, cx, cy, reach);
+  glow.addColorStop(0, withAlpha(palette.lemon, 0.42 + pulse * 0.18));
+  glow.addColorStop(0.55, withAlpha(palette.lemon, 0.16 + pulse * 0.08));
+  glow.addColorStop(1, withAlpha(palette.lemon, 0));
+  ctx.save();
+  // Light on the ground stays on the ground. Unclipped, a VIP parked against
+  // the rim threw a gold smear across the kerb and out onto the page.
+  ctx.beginPath();
+  ctx.rect(cam.ox, cam.oy, cam.cols * cam.cw, cam.rows * cam.ch);
+  ctx.clip();
+  ctx.globalCompositeOperation = 'lighter';
+  ctx.fillStyle = glow;
+  ctx.beginPath();
+  ctx.ellipse(cx, cy, reach, reach * 0.92, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+}
+
+/**
+ * The crown that floats over a VIP.
+ *
+ * The glow says "this car is special"; the crown says *which* special, and it
+ * survives a colourblind remap, a high-contrast palette and a screenshot in a
+ * way a colour alone does not. Kept small and drawn above the roof so it never
+ * hides the car it marks — and skipped entirely on tiny cells, where it would
+ * be a smudge rather than a symbol.
+ */
+function drawVipCrest(
+  ctx: CanvasRenderingContext2D,
+  cam: Camera,
+  x0: number,
+  y0: number,
+  bw: number,
+  bh: number,
+  hpx: number,
+  pulse: number,
+  palette: Palette,
+): void {
+  const cw = cam.cw;
+  if (cw < 26) return;
+  const size = Math.min(cw * 0.38, 17);
+  const cx = x0 + bw / 2;
+  const wanted = y0 - hpx - size * 0.5 - cw * 0.06 - pulse * cw * 0.03;
+  // A VIP parked in the top row has no sky to float a crown in, so the crown
+  // drops onto its roof instead of hovering over the kerb. Same marker, same
+  // car, and it never leaves the asphalt.
+  const sky = cam.oy + size * 0.8;
+  const cy =
+    wanted >= sky
+      ? wanted
+      : Math.min(y0 + bh * 0.42 - hpx * 0.5, cam.oy + cam.rows * cam.ch - size * 0.9);
+
+  ctx.save();
+  ctx.translate(cx, cy);
+  // A soft disc behind it, so gold-on-gold cars keep the crown readable.
+  ctx.fillStyle = withAlpha(palette.ink, 0.62);
+  ctx.beginPath();
+  ctx.ellipse(0, 0, size * 0.95, size * 0.86, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.strokeStyle = withAlpha(palette.lemon, 0.55);
+  ctx.lineWidth = Math.max(1, size * 0.1);
+  ctx.beginPath();
+  ctx.ellipse(0, 0, size * 0.95, size * 0.86, 0, 0, Math.PI * 2);
+  ctx.stroke();
+
+  const w = size * 0.86;
+  const h = size * 0.66;
+  ctx.fillStyle = palette.lemon;
+  ctx.beginPath();
+  ctx.moveTo(-w / 2, h / 2);
+  ctx.lineTo(-w / 2, -h * 0.28);
+  ctx.lineTo(-w * 0.22, h * 0.06);
+  ctx.lineTo(0, -h / 2);
+  ctx.lineTo(w * 0.22, h * 0.06);
+  ctx.lineTo(w / 2, -h * 0.28);
+  ctx.lineTo(w / 2, h / 2);
+  ctx.closePath();
+  ctx.fill();
+  ctx.fillStyle = withAlpha(palette.cream, 0.65);
+  ctx.fillRect(-w / 2, h * 0.24, w, h * 0.16);
   ctx.restore();
 }
 
@@ -1564,6 +1752,27 @@ export function drawParticles(ctx: CanvasRenderingContext2D, particles: readonly
       // Foreshortened as it tumbles, so the shower has depth.
       ctx.scale(1, Math.abs(Math.cos(p.life * 6)) * 0.8 + 0.2);
       ctx.fillRect(-p.size / 2, -p.size / 4, p.size, p.size / 2);
+      ctx.restore();
+    } else if (p.kind === 'star') {
+      // The impact spark of a bump. A four-point star rather than a dot,
+      // because a collision should read as a *hit* at a glance, and it has to
+      // do so on a lot where a dozen round dust puffs are already in the air.
+      ctx.save();
+      ctx.globalCompositeOperation = 'lighter';
+      ctx.translate(p.x, p.y);
+      ctx.rotate((p.spin ?? 0) + (1 - t) * 1.6);
+      const r = p.size * (0.5 + t * 0.9);
+      ctx.beginPath();
+      for (let i = 0; i < 8; i++) {
+        const a = (i / 8) * Math.PI * 2;
+        const reach = i % 2 === 0 ? r : r * 0.34;
+        const px = Math.cos(a) * reach;
+        const py = Math.sin(a) * reach;
+        if (i === 0) ctx.moveTo(px, py);
+        else ctx.lineTo(px, py);
+      }
+      ctx.closePath();
+      ctx.fill();
       ctx.restore();
     } else if (p.kind === 'spark') {
       ctx.globalCompositeOperation = 'lighter';

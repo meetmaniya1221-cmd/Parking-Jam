@@ -11,11 +11,12 @@ npm run verify     # typecheck + unit tests + production build
 npm run smoke      # drive the real game in Chromium and screenshot it
 npm run gallery    # screenshot a spread of lots, modifiers and a11y modes
 npm run progression # watch the lot grow, level 1 to 24, on three screen sizes
+npm run layout     # assert the HUD fits, in six a11y modes on three viewports
 ```
 
 ## The game in one paragraph
 
-Every lot is an integer grid. Every vehicle is an axis-aligned segment with a facing, and it moves only along that facing — forward or back. Reach a curb cut and it commits and drives off. Blocked, it honks, wobbles, and flashes the car that said no; the bump costs nothing. The puzzle is never *can I move this car*, it is *can I read the order*. Clear the lot and the district earns a little more of itself back.
+Every lot is an integer grid. Every vehicle is an axis-aligned segment with a facing, and it moves only along that facing — forward or back. Reach a curb cut and it commits and drives off. Blocked, it honks, wobbles, and flashes the car that said no — and you have three of those before the jam resets. The puzzle is never *can I move this car*, it is *can I read the order*. Clear the lot and the district earns a little more of itself back.
 
 ## How it is put together
 
@@ -150,6 +151,20 @@ The floor yields up to 8% before panning engages, so a lot that *nearly* fits is
 
 `npm run progression` screenshots the milestone jams at three screen sizes and asserts each one sits between the HUD and the boosters at a touchable size.
 
+### `src/ui` — one design system
+
+Everything on screen is built from one idea: **a night parking structure under sodium light**. A near-black blue ground, panels lifted off it by a 1px catch-light and a shadow rather than by an outline, and exactly one warm accent — amber — for everything the player owns or is being offered. Cold colours are information (time, progress, distance) and red only ever means danger.
+
+Three rules keep it from drifting:
+
+1. **One accent.** Amber marks the actionable and the earned. A second accent competing for attention is how a HUD stops being readable.
+2. **Depth by light, not by outline.** Every raised surface is a fill, a 1px top highlight and a shadow — the same recipe at three scales: chip, card, modal. Buttons carry a solid darker lip under the bottom edge and press *into* it, which is a state rather than an animation, so it survives reduced-motion intact.
+3. **Semantic colour is never decorative.** A colour used for mood makes the same colour used for meaning unreadable.
+
+The HUD is two rows, and the split is the point. The top row is *identity* — where am I, how do I leave — and the second is *state*: cars left, bumps, the rescue window, the slide meter. Mixing them put the level name next to a ticking clock and the eye could find neither. The meters row wraps rather than overflows, because four chips at 130% text scale on a 320 px phone do not fit one line and `.app` hides overflow — a clipped bump counter is worse than a second row.
+
+Icons are the one thing here that is a baked asset rather than procedural. Everything else has to scale from a 63 px cell to a 29 px one and remap for three kinds of colour blindness; chrome icons render at one small size, never remap, and a glyph with real material on it — a gold tow hook, a red shield — communicates faster than a flat pictogram. They replaced a row of emoji, which is the single loudest way a game says "prototype": emoji render differently on every platform, carry someone else's art direction, and cannot be lit to match anything around them. The chip *behind* each icon is still CSS, which is where theming has to happen.
+
 ### `src/audio` — no sample bytes
 
 Everything is synthesised at runtime. Three buses with independent toggles, per-class horn voices, tyre roll whose pitch and grain follow drag velocity, and an exit melody keyed to the district — a chained solve literally performs the tune, and the last car resolves it. Every piece of gameplay information lives on the SFX bus, so a music-off player loses nothing.
@@ -164,7 +179,7 @@ The campaign is the game; the rest are appointments.
 
 | Mode | Where | What it is |
 |---|---|---|
-| Campaign | 320 jams, twelve districts | Unlimited slides, no fail state. |
+| Campaign | 320 jams, twelve districts | Unlimited slides. Three bumps ends the attempt. |
 | Metered Lot | Sprinkled from L45 | The only fail state, and the only save-me. Capped slides, always with slack above par, never on a mechanic's first five outings and never on a skill-check. Held at L45 deliberately while the puzzle vocabulary moved earlier — difficulty was worth front-loading, a fail state was not. |
 | Rush Hour | Daily | One authored hard jam, one attempt, the same for everyone. |
 | Cold Cases | From L70 | Every retired daily, replayable and untimed. |
@@ -175,8 +190,10 @@ The campaign is the game; the rest are appointments.
 ## Design commitments that are enforced in code, not just intended
 
 - **Every jam is solvable unaided.** Guaranteed by construction in the generator, and re-verified for all 320 levels on every test run.
-- **A mistake costs nothing.** Bumps are free and diagnostic. One-way arrows and oil slicks make some slides irreversible, so there is an unlimited **Undo**, and when a lot really has been knotted for good the game notices and says so rather than letting the player grind at it.
-- **A session never ends on a failure.** Running a Metered Lot dry offers the save-me; declining it hands the player a guaranteed-solvable breather, not a loss screen.
+- **Three bumps ends the jam — and that is the only thing it costs.** A blocked car honks, wobbles and flashes the car that refused it, and the gauge steps neutral → amber → red *before* the consequence lands. The third one freezes the lot and offers Retry: no ad, no life, no currency, no confirmation between the tap and a fresh lot. The tutorial is exempt, because the three levels that teach "a blocked car just honks" must not also be the levels that punish you for finding out. One-way arrows and oil slicks make some slides irreversible, so there is an unlimited **Undo**, and when a lot really has been knotted for good the game notices and says so rather than letting the player grind at it.
+
+  This replaced a free-bump rule, and the trade is worth naming: free bumps invite you to *probe* the lot, a bump limit makes you *read* it first. The second is tenser and asks more; it is one constant (`BUMP_LIMIT`) if it ever wants to move back.
+- **A session never ends on a failure.** Running a Metered Lot dry offers the save-me; declining it hands the player a guaranteed-solvable breather, not a loss screen. The bump-out screen names the cause in the largest type on it, shows how much of the lot was cleared before it ended, and makes Retry the biggest warmest thing on the screen — a player who cannot name why they lost cannot play better, and one who cannot see their progress has no reason to go again.
 - **Never more than one modal deep.** The win screen does not stack an offer on top of itself; the pinch offer and the interstitial are mutually exclusive, and the smoke test fails the build if two overlays are ever open at once.
 - **Interstitials, exactly as specified.** Never before level 12, only on the way out of a win screen, ninety-second cooldown that lengthens after the sixth impression of a session, hard cap of twelve, and any purchase buys a twenty-four-hour holiday. There is no ad network here — the placements are honest simulations, so the guardrails around them are real and testable.
 - **Nothing owned is ever removed.** Keys and tickets above their cap convert to Coins instead of evaporating. A broken streak pauses at its last milestone.
@@ -186,6 +203,10 @@ The campaign is the game; the rest are appointments.
 
 Vehicle identity is never colour-only: class silhouettes differ, facing reads from the windscreen and light strip, one-way arrows are shape-coded, slicks carry a texture, and ambulances keep a cream body and a red cross whatever livery is equipped. On top of that sit three colourblind palette remaps, a high-contrast mode, reduced motion, three haptic levels, a left-handed layout, calm honks, and text scaling to 130% without layout breaks.
 
+The VIP is the case that made the rule pay. It has to be findable in under two seconds among thirty-two cars, *and* stay findable when it is simultaneously selected, hinted, and the car that just refused to move — so it does not compete for the selection ring. It takes the ground instead: a slow-breathing pool of warm light nothing else in the game produces, plus a crown floating over the roof. The glow says "special"; the crown says *which* special, and it survives a colourblind remap, a high-contrast palette and a black-and-white screenshot the way a colour alone does not. Both are clipped to the asphalt, and a VIP parked in the top row gets its crown on its roof rather than hovering off the board.
+
+`npm run layout` is the regression net under all of it: three viewports × six accessibility modes, asserting that nothing overflows, that the lot never slides under the HUD or the boosters, and that it is never squeezed to nothing. On a short screen the chrome gives way in priority order — the rules strip first, then the booster labels, then the header's breathing room — and nothing interactive is ever removed.
+
 ## Testing
 
 `npm test` runs 142 unit tests: sim geometry and every modifier, solver optimality and dead-end detection, the full 320-level campaign audited for validity, solvability, par, band mix, gate compliance and difficulty scaling, the progression contract, plus the economy, medals, Metered-Lot gating and save layers.
@@ -194,7 +215,9 @@ The solvability audit is the one that makes the difficulty curve safe to move. E
 
 `tests/progression.test.ts` audits the curve as a curve rather than as 320 separate lots: that the grid grows and never shrinks, that levels 1, 5, 10, 15 and 20 hit their size, density, depth and solution-length marks, that free parking dries up and bottlenecks multiply between them, that the late game really does require a temporary reposition — and that every one of them fits five different screen sizes with cells a thumb can hit.
 
-`npm run smoke` is the one that catches what unit tests cannot. It boots the real game in Chromium at phone resolution, clears levels by dispatching genuine pointer events, drags a blocked car to check it bumps rather than escapes, undoes a slide, opens a hint, plays a Night Shift lot, runs a Metered Lot dry to check the save-me appears and that declining lands on a breather, plays a level with the keyboard alone, walks every meta screen, and fails on any console error, page exception, failed request, stacked modal or empty screen.
+`npm run smoke` is the one that catches what unit tests cannot. It boots the real game in Chromium at phone resolution, clears levels by dispatching genuine pointer events, drags a blocked car to check it bumps rather than escapes, **bumps a jam out three times and then clicks Retry to prove the lot really comes back with the counter reset**, undoes a slide, opens a hint, plays a Night Shift lot, runs a Metered Lot dry to check the save-me appears and that declining lands on a breather, plays a level with the keyboard alone, walks every meta screen, and fails on any console error, page exception, failed request, stacked modal or empty screen.
+
+`npm run layout` is the one that catches a HUD outgrowing its row. `.app` hides overflow, so a chip that no longer fits does not break visibly — it silently clips, and which side it clips from changes with the left-handed setting. So the check is assertive rather than visual: three viewports (320, 412, 1440) crossed with six modes (base, 130% text, high contrast, deuteranopia, left-handed, reduced motion), failing on any horizontal scroll, any element escaping the app frame, any overlap between the lot and the chrome above or below it, and any lot squeezed under 140 px.
 
 `npm run firstrun` measures the opening: time from navigation to a touchable lot, and whether the guiding hand arrives after four seconds of hesitation and points at a car that can actually leave. On this machine it reports about 300 ms to touchable against the production build.
 

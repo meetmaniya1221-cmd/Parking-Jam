@@ -17,7 +17,8 @@
     "perf": "node scripts/perf.mjs",
     "journey": "node scripts/journey.mjs",
     "firstrun": "node scripts/firstrun.mjs",
-    "progression": "node scripts/progression.mjs"
+    "progression": "node scripts/progression.mjs",
+    "layout": "node scripts/layout.mjs"
   },
   "devDependencies": {
     "playwright": "^1.49.0",

@@ -11,6 +11,7 @@
 
 import { AudioEngine } from '../audio/audio';
 import { button, clear, el, formatNumber, pill, progressBar } from './dom';
+import { icon } from './icons';
 
 let overlayHost: HTMLElement | null = null;
 let openCount = 0;
@@ -104,7 +105,7 @@ export function anyOverlayOpen(): boolean {
 
 let toastHost: HTMLElement | null = null;
 
-export function toast(message: string, icon = ''): void {
+export function toast(message: string, glyph = ''): void {
   if (!toastHost) {
     toastHost = el('div', { class: 'toasts' });
     (overlayHost ?? document.body).appendChild(toastHost);
@@ -112,7 +113,7 @@ export function toast(message: string, icon = ''): void {
   const node = el(
     'div',
     { class: 'toast', aria: { live: 'polite' } },
-    icon ? el('span', { class: 'toast__icon', text: icon }) : null,
+    glyph ? el('span', { class: 'toast__icon', text: glyph }) : null,
     el('span', { text: message }),
   );
   toastHost.appendChild(node);
@@ -418,13 +419,16 @@ export interface WinScreenModel {
 
 export function showWinScreen(model: WinScreenModel): OverlayHandle {
   const badges = el('div', { class: 'win__badges' });
-  if (model.cleanExit) badges.appendChild(pill('✨', 'Clean Exit', 'pill--mint'));
-  if (model.goldPlate) badges.appendChild(pill('🏅', 'Gold Plate', 'pill--lemon'));
+  if (model.cleanExit) badges.appendChild(pill(icon('star', 'icon--sm'), 'Clean Exit', 'pill--mint'));
+  if (model.goldPlate) badges.appendChild(pill(icon('crown', 'icon--sm'), 'Gold Plate', 'pill--lemon'));
   if (model.keysEarned > 0) badges.appendChild(pill('🔑', `+${model.keysEarned} Impound Key`, 'pill--sky'));
 
   const content = el(
     'div',
     { class: 'sheet sheet--win' },
+    // The trophy is the reward beat: one object, centred, before any number.
+    // Numbers are the *record* of the win; this is the win.
+    el('div', { class: 'result__crest result__crest--win' }, icon('trophy', 'icon--xl')),
     el('p', { class: 'sheet__eyebrow', text: `${model.levelLabel} · ${model.bandLabel}` }),
     el('h2', { class: 'sheet__title', text: 'Lot cleared.' }),
     badges,
@@ -432,14 +436,14 @@ export function showWinScreen(model: WinScreenModel): OverlayHandle {
       'div',
       { class: 'win__stats' },
       statBlock('Slides', `${model.slides}`, `par ${model.parSlides}`),
-      statBlock('Bumps', `${model.bumps}`, model.bumps === 0 ? 'spotless' : 'free of charge'),
+      statBlock('Bumps', `${model.bumps}`, model.bumps === 0 ? 'spotless' : 'survived'),
       statBlock('Time', formatClock(model.durationMs), ''),
     ),
     el(
       'div',
       { class: 'win__rewards' },
-      pill('🪙', `+${formatNumber(model.coins)}`, 'pill--lemon'),
-      pill('🎟️', `+${formatNumber(model.miles)} Miles`, 'pill--sky'),
+      pill(icon('coin', 'icon--sm'), `+${formatNumber(model.coins)}`, 'pill--lemon'),
+      pill(icon('ticket', 'icon--sm'), `+${formatNumber(model.miles)} Miles`, 'pill--sky'),
     ),
     el(
       'div',
@@ -462,6 +466,70 @@ export function showWinScreen(model: WinScreenModel): OverlayHandle {
   );
 
   return openOverlay(content, { dismissible: false, className: 'overlay--win' });
+}
+
+/* ------------------------------------------------------------------ *
+ * Fail screen
+ * ------------------------------------------------------------------ */
+
+export interface FailScreenModel {
+  levelLabel: string;
+  /** The headline cause, e.g. "3 bumps". */
+  reason: string;
+  detail: string;
+  /** Cars driven off before it ended, and how many there were. */
+  cleared: number;
+  total: number;
+  onRetry: () => void;
+  onQuit: () => void;
+}
+
+/**
+ * The failure screen, written to be *survivable*.
+ *
+ * Three things make the difference between a fail screen that makes a player
+ * quit and one that makes them tap Retry. It has to say plainly what happened —
+ * a player who does not know why they lost cannot play better. It has to show
+ * the progress they did make, because "eighteen of twenty-four cleared" is the
+ * argument for one more go. And Retry has to be the biggest, warmest thing on
+ * the screen, with no ad, no cost and no confirmation between the tap and the
+ * fresh lot.
+ */
+export function showFailScreen(model: FailScreenModel): OverlayHandle {
+  const share = model.total === 0 ? 0 : model.cleared / model.total;
+  const content = el(
+    'div',
+    { class: 'sheet sheet--fail' },
+    el('div', { class: 'result__crest result__crest--fail' }, icon('shield', 'icon--xl')),
+    el('p', { class: 'sheet__eyebrow', text: model.levelLabel }),
+    el('h2', { class: 'sheet__title', text: 'Jam not cleared' }),
+    el('p', { class: 'fail__reason', text: model.reason }),
+    el('p', { class: 'sheet__body', text: model.detail }),
+    el(
+      'div',
+      { class: 'fail__progress' },
+      el(
+        'div',
+        { class: 'win__districtHead' },
+        el('span', { text: 'Cleared before it ended' }),
+        el('span', { text: `${model.cleared}/${model.total} cars` }),
+      ),
+      progressBar(share, 'bar--gold'),
+    ),
+    el(
+      'div',
+      { class: 'sheet__actions' },
+      button('Retry', { variant: 'primary', onTap: () => model.onRetry() }),
+      button('City map', { variant: 'ghost', onTap: () => model.onQuit() }),
+    ),
+  );
+
+  const handle = openOverlay(content, { dismissible: false, className: 'overlay--fail' });
+  // Both routes leave this level, so neither wants the sheet still on screen.
+  for (const btn of content.querySelectorAll('button')) {
+    btn.addEventListener('click', () => handle.close());
+  }
+  return handle;
 }
 
 function statBlock(label: string, value: string, note: string): HTMLElement {

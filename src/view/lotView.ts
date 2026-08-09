@@ -160,7 +160,7 @@ export class LotView {
   private view: LotViewContext;
 
   /** Public so automated play-testing can map cells to screen points. */
-  camera: Camera = { ox: 0, oy: 0, cw: 32, ch: 30 };
+  camera: Camera = { ox: 0, oy: 0, cw: 32, ch: 30, cols: 1, rows: 1 };
   private cameraScale = 1;
   private targetCameraScale = 1;
   private ground: HTMLCanvasElement | null = null;
@@ -192,6 +192,8 @@ export class LotView {
   private timeScale = 1;
   private slowMoRemaining = 0;
   private dpr = 1;
+  /** Shared phase for every VIP halo, so a lot with three of them breathes as one. */
+  private vipPhase = 0;
 
   private dragVi = -1;
   private dragOffset = 0;
@@ -472,7 +474,14 @@ export class LotView {
     const fit = fitCamera(this.level, width, height, padding, minCell);
     this.overflows = fit.overflow;
     if (this.camera.cw !== fit.cw) this.groundDirty = true;
-    this.camera = { ox: fit.ox, oy: fit.oy, cw: fit.cw, ch: fit.ch };
+    this.camera = {
+      ox: fit.ox,
+      oy: fit.oy,
+      cw: fit.cw,
+      ch: fit.ch,
+      cols: this.level.w,
+      rows: this.level.h,
+    };
     if (!this.overflows) {
       this.panX = 0;
       this.panY = 0;
@@ -998,6 +1007,7 @@ export class LotView {
 
     if (p.block.blockerVi >= 0) this.anims[p.block.blockerVi].flash = 1;
     this.spawnRing(vi);
+    this.spawnImpact(vi, dir);
     this.events.onBump?.(vi, p.block.blockerVi, p.block.reason);
     this.events.onStateChanged?.();
   }
@@ -1099,6 +1109,40 @@ export class LotView {
     }
   }
 
+  /**
+   * The star burst a bump throws off.
+   *
+   * Aimed at the point of contact rather than the car's centre, and thrown
+   * *back* off it, so the eye is pulled to the seam between the two cars — which
+   * is the thing the player needs to understand about the refusal.
+   */
+  private spawnImpact(vi: number, dir: Dir): void {
+    if (this.view.settings.reducedMotion) return;
+    const c = this.vehicleCenter(vi);
+    const len = this.state.len[vi];
+    const nose = {
+      x: c.x + DX[dir] * this.camera.cw * (len / 2 - 0.1),
+      y: c.y + DY[dir] * this.camera.ch * (len / 2 - 0.1),
+    };
+    const colors = [this.view.palette.lemon, this.view.palette.coralLight, this.view.palette.cream];
+    for (let i = 0; i < 7; i++) {
+      const spread = (Math.random() - 0.5) * 2.1;
+      const speed = 90 + Math.random() * 130;
+      this.particles.push({
+        x: nose.x,
+        y: nose.y,
+        vx: (-DX[dir] * Math.cos(spread) - DY[dir] * Math.sin(spread)) * speed,
+        vy: (-DY[dir] * Math.cos(spread) + DX[dir] * Math.sin(spread)) * speed,
+        life: 0.34,
+        maxLife: 0.34,
+        size: this.camera.cw * (0.1 + Math.random() * 0.08),
+        color: colors[i % colors.length],
+        kind: 'star',
+        spin: Math.random() * Math.PI,
+      });
+    }
+  }
+
   private spawnRing(vi: number): void {
     if (this.view.settings.reducedMotion) return;
     const c = this.vehicleCenter(vi);
@@ -1182,6 +1226,9 @@ export class LotView {
 
     this.cameraScale += (this.targetCameraScale - this.cameraScale) * Math.min(1, dt * 4);
     this.headShake = Math.max(0, this.headShake - rawDt * 4);
+    // Slow on purpose. A VIP marker that blinks competes with the hint pulse and
+    // the bump flash; one that breathes is found without ever being loud.
+    this.vipPhase = (this.vipPhase + rawDt * 1.5) % (Math.PI * 2);
 
     for (let i = 0; i < this.anims.length; i++) {
       const a = this.anims[i];
@@ -1272,7 +1319,14 @@ export class LotView {
     drawGround(
       gctx,
       this.level,
-      { ox: margin, oy: margin, cw: this.camera.cw, ch: this.camera.ch },
+      {
+        ox: margin,
+        oy: margin,
+        cw: this.camera.cw,
+        ch: this.camera.ch,
+        cols: this.level.w,
+        rows: this.level.h,
+      },
       this.view.palette,
     );
 
@@ -1358,6 +1412,9 @@ export class LotView {
         highlight: a.highlight,
         hint: a.hint,
         flash: a.flash,
+        vipPulse: this.view.settings.reducedMotion
+          ? 0.5
+          : (Math.sin(this.vipPhase) + 1) / 2,
         isRide: i === rideIdx,
       });
     }

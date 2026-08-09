@@ -76,12 +76,18 @@ export function button(label: string, options: ButtonOptions = {}): HTMLButtonEl
   return node;
 }
 
-/** A number with its icon — GDD §12: numbers never appear without their icon. */
-export function pill(icon: string, value: string, className = ''): HTMLElement {
+/**
+ * A number with its icon — GDD §12: numbers never appear without their icon.
+ *
+ * Takes either a glyph or a rendered icon element, so a caller can hand it one
+ * of the baked 3D icons without this module having to import the icon set and
+ * drag every PNG into every screen that only wanted a chip.
+ */
+export function pill(icon: string | HTMLElement, value: string, className = ''): HTMLElement {
   return el(
     'span',
     { class: `pill ${className}`.trim() },
-    el('span', { class: 'pill__icon', text: icon }),
+    typeof icon === 'string' ? el('span', { class: 'pill__icon', text: icon }) : icon,
     el('span', { class: 'pill__value', text: value }),
   );
 }

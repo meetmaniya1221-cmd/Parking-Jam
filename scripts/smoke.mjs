@@ -244,6 +244,56 @@ async function checkInteractions(page) {
 }
 
 /** The lot must be playable with a keyboard alone. */
+/**
+ * Three bumps end the jam.
+ *
+ * The interesting part is not that the overlay appears — it is that Retry puts
+ * the player straight back into a *fresh* lot with the counter reset and the
+ * cars all back. A fail screen whose Retry leaves the lot in its failed state
+ * is worse than no fail screen at all, and it is the kind of thing only a real
+ * click can catch.
+ */
+async function checkBumpLimit(page) {
+  await page.evaluate(() => window.__gridlock.jumpTo(12));
+  await page.waitForSelector('.lot__canvas');
+  await page.waitForTimeout(700);
+
+  const before = await lotState(page);
+  for (let i = 0; i < 3; i++) {
+    const stuck = await page.evaluate(() => window.__gridlock.stuck()[0] ?? -1);
+    if (stuck < 0) {
+      problems.push('bump limit: no car on the lot could be made to bump');
+      return;
+    }
+    await tapVehicle(page, stuck);
+    await page.waitForTimeout(340);
+  }
+
+  const failed = await page
+    .waitForSelector('.sheet--fail', { timeout: 4000 })
+    .then(() => true)
+    .catch(() => false);
+  if (!failed) {
+    const now = await lotState(page);
+    problems.push(`bump limit: no fail screen after ${now.bumps} bumps`);
+    return;
+  }
+  step('three bumps ended the jam');
+
+  const frozen = await page.evaluate(() => window.__gridlock.lotView.state.remaining);
+  await page.locator('.sheet--fail .btn--primary').click();
+  await page.waitForTimeout(900);
+  const after = await lotState(page);
+  if (after.bumps !== 0) problems.push(`bump limit: retry kept ${after.bumps} bumps`);
+  if (after.remaining !== before.remaining) {
+    problems.push(`bump limit: retry restored ${after.remaining} cars, expected ${before.remaining}`);
+  }
+  if (await page.locator('.sheet--fail').isVisible().catch(() => false)) {
+    problems.push('bump limit: the fail screen survived Retry');
+  }
+  step(`retry reset ${frozen} stranded cars back to ${after.remaining}, 0 bumps`);
+}
+
 async function checkKeyboard(page) {
   await page.evaluate(() => window.__gridlock.jumpTo(12));
   await page.waitForSelector('.lot__canvas');
@@ -531,6 +581,7 @@ async function run(page) {
   step('settings opened and closed');
 
   await checkInteractions(page);
+  await checkBumpLimit(page);
   await checkKeyboard(page);
   await checkMeteredLot(page);
   await checkResume(page);

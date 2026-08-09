@@ -24,6 +24,7 @@ import { grantOverflowCrate, pendingIncome, refreshDispatch, syncGauntlet } from
 import { dayNumber, Settings } from './meta/save';
 import { GameStore } from './meta/store';
 import { button, el, formatNumber, pill } from './ui/dom';
+import { icon, IconName } from './ui/icons';
 import { anyOverlayOpen, initOverlays, openOverlay, showSheet, toast } from './ui/overlays';
 import {
   createDepotScreen,
@@ -43,12 +44,12 @@ function formatPlayTime(ms: number): string {
   return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
 }
 
-const TABS: Array<{ id: TabId; icon: string; label: string }> = [
-  { id: 'map', icon: '🗺️', label: 'City' },
-  { id: 'depot', icon: '🏭', label: 'Depot' },
-  { id: 'play', icon: '🚗', label: 'Play' },
-  { id: 'events', icon: '📅', label: 'Events' },
-  { id: 'garage', icon: '🎨', label: 'Garage' },
+const TABS: Array<{ id: TabId; art: IconName; label: string }> = [
+  { id: 'map', art: 'city', label: 'City' },
+  { id: 'depot', art: 'depot', label: 'Depot' },
+  { id: 'play', art: 'car', label: 'Play' },
+  { id: 'events', art: 'events', label: 'Events' },
+  { id: 'garage', art: 'garage', label: 'Garage' },
 ];
 
 /** A lapse this long triggers the Depot overflow crate (GDD §7). */
@@ -163,7 +164,7 @@ export class App {
           aria: { label: tab.label },
           on: { click: () => this.navigate(tab.id) },
         },
-        el('span', { class: 'tab__icon', text: tab.icon }),
+        icon(tab.art, 'tab__icon'),
         el('span', { class: 'tab__label', text: tab.label }),
       );
       this.tabBar.appendChild(node);
@@ -173,8 +174,8 @@ export class App {
   refreshChrome(): void {
     const w = this.store.state.wallet;
     this.walletBar.replaceChildren(
-      pill('🪙', formatNumber(w.coins), 'pill--lemon'),
-      pill('🎖️', formatNumber(w.medallions), 'pill--sky'),
+      pill(icon('coin', 'icon--sm'), formatNumber(w.coins), 'pill--lemon'),
+      pill(icon('medal', 'icon--sm'), formatNumber(w.medallions), 'pill--sky'),
       w.blueprints > 0 ? pill('📐', formatNumber(w.blueprints), 'pill--mint') : el('span'),
       w.keys > 0 ? pill('🔑', formatNumber(w.keys), 'pill--muted') : el('span'),
     );

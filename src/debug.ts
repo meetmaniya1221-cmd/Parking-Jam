@@ -18,6 +18,14 @@ export interface GridlockDebug {
   canvas: HTMLCanvasElement | null;
   /** Vehicle indices that can drive off the lot right now. */
   exitable(): number[];
+  /**
+   * Cars that cannot move forward one cell — tapping one is guaranteed to bump.
+   *
+   * The bump economy is now a fail state, so a harness has to be able to
+   * *cause* a bump deliberately rather than hope a drag produces one. Reading
+   * the sim's own probe is the only way to know which car will refuse.
+   */
+  stuck(): number[];
   /** Global index of the lot on screen, or 0 for an event jam. */
   levelIndex: number;
   /** Jump straight to a level. Patching the save from outside races the
@@ -73,6 +81,17 @@ const handle: GridlockDebug = {
   canvas: null,
   exitable(): number[] {
     return handle.lotView ? exitableVehicles(handle.lotView.state) : [];
+  },
+  stuck(): number[] {
+    const view = handle.lotView;
+    if (!view) return [];
+    const out: number[] = [];
+    for (let vi = 0; vi < view.state.x.length; vi++) {
+      if (view.state.gone[vi]) continue;
+      const p = probe(view.state, vi, view.state.facing[vi] as Dir);
+      if (p.dist === 0 && p.exitDist < 0 && !view.isOnPlate(vi)) out.push(vi);
+    }
+    return out;
   },
   levelIndex: 0,
   jumpTo(): void {

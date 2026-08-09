@@ -35,7 +35,9 @@ import { GameStore } from '../meta/store';
 import { LotView, LotViewContext } from '../view/lotView';
 import { paletteFor } from '../view/theme';
 import { button, el, formatNumber } from '../ui/dom';
+import { icon, IconName } from '../ui/icons';
 import {
+  showFailScreen,
   showInterstitial,
   showRewardedOffer,
   showSheet,
@@ -75,8 +77,26 @@ const MODE_PLACE: Record<Exclude<PlayMode, 'campaign'>, string> = {
 };
 
 const AMBULANCE_WINDOW_MS = 30_000;
-/** Dispatcher pulses after this many bumps inside the window (GDD §17 test #6). */
-const PULSE_BUMPS = 6;
+
+/**
+ * Bumps a jam survives. The third one ends the attempt.
+ *
+ * This is a real change of contract, and worth being honest about: the original
+ * design made bumps free on purpose — a blocked car honks, nothing is lost, and
+ * the player is invited to probe the lot rather than plan it. Three strikes
+ * turns probing into a cost, which makes the lot something you read before you
+ * touch. That is a *different* game feel, tighter and more tense, and it is the
+ * one asked for.
+ *
+ * Two guards keep it from being cruel. The tutorial is exempt (see
+ * `bumpLimitApplies`) — level one teaching the verb must not also be the level
+ * that punishes you for trying it. And a retry is free and instant: the cost of
+ * failing is thirty seconds, never a life or a coin.
+ */
+export const BUMP_LIMIT = 3;
+
+/** Dispatcher pulses on the last warning, where help is still useful. */
+const PULSE_BUMPS = BUMP_LIMIT - 1;
 const PULSE_WINDOW_MS = 30_000;
 const INTERSTITIAL_COOLDOWN_MS = 90_000;
 const INTERSTITIAL_SESSION_CAP = 12;
@@ -86,6 +106,9 @@ interface BoosterButton {
   node: HTMLButtonElement;
   count: HTMLElement;
 }
+
+/** Levels that still show the rules strip under the boosters. */
+const RULES_STRIP_LEVELS = 8;
 
 /** Cars in the lot above which the dead-end check is deferred to idle time. */
 const DEAD_END_INLINE_LIMIT = 12;
@@ -128,11 +151,21 @@ export class PlayScreen {
   private counterValue!: HTMLElement;
   private counterNode!: HTMLElement;
   private bumpNode!: HTMLElement;
+  private bumpValue!: HTMLElement;
   private titleNode!: HTMLElement;
   private patternNode!: HTMLElement;
   private ambulanceNode!: HTMLElement;
+  private ambulanceValue!: HTMLElement;
   private meterNode!: HTMLElement;
+  private meterValue!: HTMLElement;
   private coachNode!: HTMLElement;
+  private lotNode!: HTMLElement;
+  private flashNode!: HTMLElement;
+  private rulesNode!: HTMLElement;
+  private rulesLimitItem!: HTMLElement;
+  private rulesLimitHead!: HTMLElement;
+  private rulesLimitBody!: Text;
+  private failed = false;
   private boosterButtons: BoosterButton[] = [];
   private undoButton!: HTMLButtonElement;
   private deadEndWarned = false;
@@ -162,13 +195,20 @@ export class PlayScreen {
           'Parking lot. Arrow keys select a car, Enter drives it, R reverses it, Z undoes a move.',
       },
     });
-    this.root = el('div', { class: 'play' }, this.buildHeader(), el('div', { class: 'lot' }, this.canvas, this.buildCoach()), this.buildFooter());
+    this.lotNode = el('div', { class: 'lot' }, this.canvas, this.buildFlash(), this.buildCoach());
+    this.root = el('div', { class: 'play' }, this.buildHeader(), this.lotNode, this.buildFooter());
   }
 
   /* ---------------------------------------------------------------- *
    * Chrome
    * ---------------------------------------------------------------- */
 
+  /**
+   * Two rows, and the split is deliberate: the top row is *identity* — where am
+   * I, and how do I get out of here — and the second is *state*, everything
+   * that changes while you play. Mixing them put the level name next to a
+   * ticking clock, and the eye could never find either.
+   */
   private buildHeader(): HTMLElement {
     this.titleNode = el('span', { class: 'play__level' });
     this.patternNode = el('span', { class: 'play__pattern' });
@@ -179,9 +219,39 @@ export class PlayScreen {
       this.counterValue,
       el('span', { class: 'counter__label', text: 'cars left' }),
     );
-    this.bumpNode = el('span', { class: 'play__bumps', text: '0 bumps' });
-    this.ambulanceNode = el('div', { class: 'ambulance', hidden: true });
-    this.meterNode = el('div', { class: 'meter', hidden: true });
+
+    this.bumpValue = el('span', { class: 'bumps__value', text: '0' });
+    this.bumpNode = el(
+      'div',
+      { class: 'chip bumps', title: `Three bumps and the jam resets`, aria: { live: 'polite' } },
+      icon('shield', 'icon--sm'),
+      el(
+        'span',
+        { class: 'bumps__pair' },
+        this.bumpValue,
+        el('span', { class: 'bumps__limit', text: `/${BUMP_LIMIT}` }),
+      ),
+    );
+
+    this.ambulanceValue = el('span', {});
+    this.ambulanceNode = el(
+      'div',
+      { class: 'chip ambulance', hidden: true },
+      icon('rescue', 'icon--sm'),
+      this.ambulanceValue,
+    );
+
+    this.meterValue = el('span', {});
+    this.meterNode = el('div', { class: 'chip meter', hidden: true }, this.meterValue);
+
+    const restart = button('', {
+      variant: 'ghost',
+      class: 'iconBtn',
+      title: 'Restart this jam',
+      aria: { label: 'Restart this jam' },
+      onTap: () => this.restart(),
+    });
+    restart.prepend(icon('retry'));
 
     return el(
       'header',
@@ -194,21 +264,19 @@ export class PlayScreen {
           class: 'iconBtn',
           icon: '‹',
           title: 'Back to the city',
+          aria: { label: 'Back to the city' },
           onTap: () => this.leave(),
         }),
         el('div', { class: 'play__ident' }, this.titleNode, this.patternNode),
-        button('', {
-          variant: 'ghost',
-          class: 'iconBtn',
-          icon: '↺',
-          title: 'Restart this jam',
-          onTap: () => this.restart(),
-        }),
+        restart,
       ),
-      el('div', { class: 'play__meters' }, this.counterNode, this.bumpNode),
-      this.meterNode,
-      this.ambulanceNode,
+      el('div', { class: 'play__meters' }, this.counterNode, this.bumpNode, this.ambulanceNode, this.meterNode),
     );
+  }
+
+  private buildFlash(): HTMLElement {
+    this.flashNode = el('div', { class: 'lot__flash' });
+    return this.flashNode;
   }
 
   /**
@@ -239,15 +307,15 @@ export class PlayScreen {
       title: 'Undo the last slide',
       onTap: () => this.undo(),
     });
-    this.undoButton.prepend(el('span', { class: 'booster__icon', text: '↶' }));
+    this.undoButton.prepend(icon('undo'));
     this.undoButton.appendChild(el('span', { class: 'booster__label', text: 'Undo' }));
     boosterRow.appendChild(this.undoButton);
 
-    const defs: Array<{ id: BoosterId; icon: string; label: string }> = [
-      { id: 'towHook', icon: '🪝', label: 'Tow Hook' },
-      { id: 'dispatcher', icon: '📻', label: 'Dispatcher' },
-      { id: 'greenWave', icon: '🟢', label: 'Green Wave' },
-      { id: 'gripTires', icon: '🛞', label: 'Grip Tires' },
+    const defs: Array<{ id: BoosterId; art: IconName; label: string }> = [
+      { id: 'towHook', art: 'tow', label: 'Tow Hook' },
+      { id: 'dispatcher', art: 'dispatch', label: 'Dispatcher' },
+      { id: 'greenWave', art: 'greenwave', label: 'Green Wave' },
+      { id: 'gripTires', art: 'grip', label: 'Grip Tires' },
     ];
     for (const def of defs) {
       const count = el('span', { class: 'booster__count', text: '0' });
@@ -257,13 +325,41 @@ export class PlayScreen {
         title: def.label,
         onTap: () => this.useBooster(def.id),
       });
-      node.prepend(el('span', { class: 'booster__icon', text: def.icon }));
+      node.prepend(icon(def.art));
       node.appendChild(el('span', { class: 'booster__label', text: def.label }));
       node.appendChild(count);
       boosterRow.appendChild(node);
       this.boosterButtons.push({ id: def.id, node, count });
     }
-    return el('footer', { class: 'play__footer' }, boosterRow);
+
+    this.rulesNode = this.buildRules();
+    return el('footer', { class: 'play__footer' }, boosterRow, this.rulesNode);
+  }
+
+  /**
+   * The three facts that decide whether a bump feels unfair.
+   *
+   * A player who does not know a bump is survivable reads the first honk as a
+   * mistake they cannot undo; one who does not know three ends the jam is
+   * ambushed by the third. Both are cheap to prevent and expensive to explain
+   * afterwards, so the rules live on the screen rather than in a menu — and
+   * then get out of the way once they have been read.
+   */
+  private buildRules(): HTMLElement {
+    const item = (art: IconName, head: HTMLElement, body: Text) =>
+      el('div', { class: 'rules__item' }, icon(art), el('span', {}, head, body));
+
+    this.rulesLimitHead = el('span', { class: 'rules__head' });
+    this.rulesLimitBody = document.createTextNode('');
+    this.rulesLimitItem = item('shield', this.rulesLimitHead, this.rulesLimitBody);
+
+    return el(
+      'div',
+      { class: 'rules' },
+      item('dispatch', el('span', { class: 'rules__head', text: 'Bump' }), document.createTextNode('a car just honks')),
+      this.rulesLimitItem,
+      item('retry', el('span', { class: 'rules__head', text: 'Retry' }), document.createTextNode('is always free')),
+    );
   }
 
   /* ---------------------------------------------------------------- *
@@ -423,6 +519,7 @@ export class PlayScreen {
     this.trunksBanked = [];
     this.ambulancesRescued = 0;
     this.finished = false;
+    this.failed = false;
     this.deadEndWarned = false;
     this.bonusMoves = 0;
     this.outOfMoves = false;
@@ -448,7 +545,17 @@ export class PlayScreen {
     // The counter is the loop's metronome: it brightens as the goal nears.
     this.counterNode.classList.toggle('counter--near', remaining <= 5 && remaining > 0);
     this.counterNode.classList.toggle('counter--final', remaining <= 3 && remaining > 0);
-    this.bumpNode.textContent = state.bumps === 1 ? '1 bump' : `${state.bumps} bumps`;
+
+    // The bump gauge escalates a step ahead of the consequence: amber on the
+    // first, red and breathing on the last one that is still survivable.
+    const limited = this.bumpLimitApplies();
+    const bumps = Math.min(state.bumps, BUMP_LIMIT);
+    this.bumpValue.textContent = String(bumps);
+    this.bumpNode.classList.toggle('bumps--warn', limited && bumps === 1);
+    this.bumpNode.classList.toggle('bumps--danger', limited && bumps >= BUMP_LIMIT - 1);
+    this.bumpNode.title = limited
+      ? `${BUMP_LIMIT - bumps} bump${BUMP_LIMIT - bumps === 1 ? '' : 's'} left before the jam resets`
+      : 'Bumps are free while you are learning';
 
     const band = this.level.band;
     this.titleNode.textContent = this.title;
@@ -466,9 +573,25 @@ export class PlayScreen {
     } else {
       const left = this.movesLeft();
       this.meterNode.hidden = false;
-      this.meterNode.textContent = `🅿️ ${left} ${left === 1 ? 'slide' : 'slides'} left`;
+      this.meterValue.textContent = `${left} ${left === 1 ? 'slide' : 'slides'} left`;
       this.meterNode.classList.toggle('meter--low', left <= 2);
     }
+
+    // The rules strip is for the first jams, when the bump economy is still
+    // news. Past that it is thirty pixels the lot wants back.
+    //
+    // It has to tell the truth on both sides of the tutorial line: while bumps
+    // are free it says so, and the level the limit switches on is the level the
+    // strip changes under the player — which is the clearest possible warning.
+    this.rulesNode.hidden = this.levelIndex > RULES_STRIP_LEVELS;
+    if (limited) {
+      this.rulesLimitHead.textContent = `${BUMP_LIMIT} bumps`;
+      this.rulesLimitBody.textContent = 'and it resets';
+    } else {
+      this.rulesLimitHead.textContent = 'Free';
+      this.rulesLimitBody.textContent = 'while you learn';
+    }
+    this.rulesLimitItem.classList.toggle('rules__item--danger', limited);
 
     this.undoButton.disabled = !this.view.canUndo();
     this.undoButton.classList.toggle('booster--empty', !this.view.canUndo());
@@ -489,7 +612,7 @@ export class PlayScreen {
         this.expireAmbulance();
       } else {
         this.ambulanceNode.hidden = false;
-        this.ambulanceNode.textContent = `🚑 Rescue window · ${Math.ceil(left / 1000)}s`;
+        this.ambulanceValue.textContent = `Rescue · ${Math.ceil(left / 1000)}s`;
         this.ambulanceNode.classList.toggle('ambulance--urgent', left < 8000);
       }
     }
@@ -530,6 +653,17 @@ export class PlayScreen {
     if (tags & VehicleTag.Trunk) this.trunksBanked.push(vi);
   }
 
+  /**
+   * Does this jam count bumps against the player?
+   *
+   * The tutorial does not. Levels one to three exist to teach that a blocked
+   * car honks and nothing breaks; ending them on the third honk would teach the
+   * opposite, in the three levels where the lesson matters most.
+   */
+  private bumpLimitApplies(): boolean {
+    return this.levelIndex > TUTORIAL_LEVELS || this.mode !== 'campaign';
+  }
+
   private onBump(reason: BlockReason): void {
     const now = performance.now();
     this.bumpTimes.push(now);
@@ -541,13 +675,67 @@ export class PlayScreen {
       toast('One-way. Not that way.', '⛔');
     }
 
-    // Offer, not interruption: after six bumps in half a minute the Dispatcher
-    // button pulses. Help arrives inside the frustration, not after it.
+    // The lot itself reacts, not the whole screen: a red bloom at the edges and
+    // a short shake, so the feedback lands where the player is looking.
+    this.flashLot();
+
+    if (this.bumpLimitApplies() && this.view && this.view.state.bumps >= BUMP_LIMIT) {
+      void this.onBumpedOut();
+      return;
+    }
+
+    // Offer, not interruption: on the last warning the Dispatcher button pulses.
+    // Help arrives inside the frustration, not after it.
     if (this.bumpTimes.length >= PULSE_BUMPS) {
       const dispatcher = this.boosterButtons.find((b) => b.id === 'dispatcher');
       dispatcher?.node.classList.add('booster--pulse');
       window.setTimeout(() => dispatcher?.node.classList.remove('booster--pulse'), 6000);
       this.bumpTimes = [];
+    }
+  }
+
+  private flashLot(): void {
+    if (this.store.state.settings.reducedMotion) return;
+    this.flashNode.classList.remove('lot__flash--on');
+    this.lotNode.classList.remove('lot--shake');
+    // Force a reflow so the animation restarts on a rapid second bump.
+    void this.flashNode.offsetWidth;
+    this.flashNode.classList.add('lot__flash--on');
+    this.lotNode.classList.add('lot--shake');
+  }
+
+  /**
+   * Third bump. Freeze the lot, then hand over to the fail screen.
+   *
+   * The pause before the overlay is not decoration — it lets the bump's own
+   * honk, shake and flash land first. An overlay that appears on the same frame
+   * as the collision reads as a bug rather than as a consequence.
+   */
+  private async onBumpedOut(): Promise<void> {
+    if (!this.view || this.finished || this.failed) return;
+    this.failed = true;
+    this.view.setInteractive(false);
+    window.clearInterval(this.tickTimer);
+    window.clearTimeout(this.hintTimer);
+    window.clearTimeout(this.coachTimer);
+    window.clearTimeout(this.deadEndTimer);
+    this.ambulanceNode.hidden = true;
+    this.audio.softMiss();
+    this.syncHud();
+
+    const cars = this.view.state.remaining;
+    const total = this.view.state.x.length;
+    await new Promise((resolve) => window.setTimeout(resolve, 620));
+    if (this.failed) {
+      showFailScreen({
+        levelLabel: this.title,
+        reason: `${BUMP_LIMIT} bumps`,
+        detail: 'Three cars refused to move. The lot resets — it costs nothing but the time.',
+        cleared: total - cars,
+        total,
+        onRetry: () => this.restart(),
+        onQuit: () => this.leave(),
+      });
     }
   }
 
