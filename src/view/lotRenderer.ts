@@ -1,14 +1,20 @@
 /**
  * Canvas rendering for the lot (GDD §12 "Visual Direction").
  *
- * Stylised low-poly toy diorama in 2D: the ground is a foreshortened grid, and
- * every vehicle is a chunky bevelled brick — a base plate, three lit side
- * faces and an inset top — under one warm key light from the upper left. The
- * grid stays readable at all times: the tilt is foreshortening only, never
- * enough to hide a cell.
+ * A stylised toy diorama in 2D. The camera is very nearly top-down — the tilt
+ * is foreshortening only, never enough to hide a cell — so every solid object
+ * is built the same way: a base footprint, a lifted top face, and the side
+ * faces between them, lit by one warm key from the upper left.
  *
- * The ground is baked to an offscreen canvas and blitted, so a frame costs one
- * image draw plus the vehicles.
+ * A vehicle is not one brick but a stack of volumes: a lower body, then a
+ * greenhouse, cargo box or roof sign on top of it. That stack is what gives
+ * each class a silhouette you can name at a glance, which matters more here
+ * than colour ever can — the player has to count and identify cars in a packed
+ * lot, sometimes in a colourblind remap, sometimes by headlight alone.
+ *
+ * Cost is controlled in two places: the ground is baked to an offscreen canvas
+ * and blitted, and a vehicle that is not mid-bump is blitted from a cached
+ * sprite. A still frame is therefore one ground image plus one image per car.
  */
 
 import {
@@ -21,6 +27,7 @@ import {
   VehicleKind,
   VehicleTag,
 } from '../core/types';
+import { makeRng, quad, resetSprites, roundRect, sprite, stampGrain } from './paint';
 import { Palette, shade, withAlpha } from './theme';
 
 /** Vertical foreshortening — enough parallax to feel dimensional, never enough to hide a cell. */
@@ -31,11 +38,12 @@ export const CELL_ASPECT = 0.92;
  * block, which destroys the count.
  */
 const BODY_MARGIN = 0.1;
-/** How far the top face is inset from the base, in cell units — the bevel. */
+/** How far a top face is inset from the base it sits on, in cell units — the bevel. */
 const BEVEL = 0.07;
 
 /**
- * Extrusion height in cell units.
+ * Total extrusion height in cell units, shared between the body and whatever
+ * rides on top of it.
  *
  * Kept deliberately low: a lifted top face is drawn *above* its own cells, so a
  * tall car covers the one parked behind it. Enough height to read as a solid
@@ -50,6 +58,52 @@ const VEHICLE_HEIGHT: Record<VehicleKind, number> = {
   [VehicleKind.Trailer]: 0.36,
   [VehicleKind.Bus]: 0.46,
   [VehicleKind.Ambulance]: 0.4,
+};
+
+/** Share of the height budget spent on the lower body; the rest is the stack above. */
+const BODY_SHARE = 0.58;
+
+/**
+ * An upper volume, in body-relative coordinates: `from`/`to` run tail (0) to
+ * nose (1), `inset` eats into each side as a fraction of the half-width, and
+ * `lift` scales the remaining height budget.
+ */
+interface Volume {
+  from: number;
+  to: number;
+  inset: number;
+  lift: number;
+  /** A glass canopy rather than a solid panel. */
+  glass: boolean;
+}
+
+/**
+ * The silhouette table. This is where a bus stops looking like a long sedan:
+ * a cab-plus-box truck, a nearly-full-length coach greenhouse and a stubby
+ * coupe cabin are different objects even in pure silhouette.
+ */
+const VOLUMES: Record<VehicleKind, readonly Volume[]> = {
+  [VehicleKind.Sedan]: [{ from: 0.24, to: 0.66, inset: 0.34, lift: 1, glass: true }],
+  [VehicleKind.Taxi]: [
+    { from: 0.24, to: 0.66, inset: 0.34, lift: 1, glass: true },
+    // Roof sign: small, tall, unmistakable.
+    { from: 0.41, to: 0.55, inset: 0.62, lift: 1.5, glass: false },
+  ],
+  [VehicleKind.Coupe]: [{ from: 0.2, to: 0.58, inset: 0.36, lift: 0.95, glass: true }],
+  [VehicleKind.Van]: [{ from: 0.14, to: 0.8, inset: 0.2, lift: 1, glass: true }],
+  [VehicleKind.BoxTruck]: [
+    { from: 0.06, to: 0.56, inset: 0.12, lift: 1.2, glass: false },
+    { from: 0.6, to: 0.88, inset: 0.28, lift: 0.8, glass: true },
+  ],
+  [VehicleKind.Trailer]: [
+    { from: 0.06, to: 0.6, inset: 0.22, lift: 0.45, glass: false },
+    { from: 0.64, to: 0.9, inset: 0.26, lift: 1.05, glass: true },
+  ],
+  [VehicleKind.Bus]: [{ from: 0.08, to: 0.9, inset: 0.18, lift: 1, glass: true }],
+  [VehicleKind.Ambulance]: [
+    { from: 0.06, to: 0.54, inset: 0.12, lift: 1.1, glass: false },
+    { from: 0.58, to: 0.86, inset: 0.28, lift: 0.85, glass: true },
+  ],
 };
 
 export interface Camera {
@@ -135,43 +189,6 @@ export function screenToCell(cam: Camera, x: number, y: number): { x: number; y:
   return { x: Math.floor((x - cam.ox) / cam.cw), y: Math.floor((y - cam.oy) / cam.ch) };
 }
 
-function roundRect(
-  ctx: CanvasRenderingContext2D,
-  x: number,
-  y: number,
-  w: number,
-  h: number,
-  r: number,
-): void {
-  const radius = Math.max(0, Math.min(r, Math.min(Math.abs(w), Math.abs(h)) / 2));
-  ctx.beginPath();
-  ctx.moveTo(x + radius, y);
-  ctx.arcTo(x + w, y, x + w, y + h, radius);
-  ctx.arcTo(x + w, y + h, x, y + h, radius);
-  ctx.arcTo(x, y + h, x, y, radius);
-  ctx.arcTo(x, y, x + w, y, radius);
-  ctx.closePath();
-}
-
-function quad(
-  ctx: CanvasRenderingContext2D,
-  ax: number,
-  ay: number,
-  bx: number,
-  by: number,
-  cx: number,
-  cy: number,
-  dx: number,
-  dy: number,
-): void {
-  ctx.beginPath();
-  ctx.moveTo(ax, ay);
-  ctx.lineTo(bx, by);
-  ctx.lineTo(cx, cy);
-  ctx.lineTo(dx, dy);
-  ctx.closePath();
-}
-
 /** Cell-space bounds of a vehicle body, before any bevel or margin. */
 export function vehicleBounds(v: { gx: number; gy: number; facing: Dir; len: number }) {
   const dx = DX[v.facing];
@@ -223,34 +240,65 @@ export function drawGround(
   cam: Camera,
   palette: Palette,
 ): void {
+  // The ground is only rebaked when the palette or the layout changes, which is
+  // exactly when a cached vehicle sprite has also gone stale.
+  resetSprites();
+
   const { cw, ch, ox, oy } = cam;
   const w = level.w * cw;
   const h = level.h * ch;
+  const radius = cw * 0.16;
+  // Decoration has to land identically on every rebake, or rotating the phone
+  // would reshuffle every stain on the lot.
+  const rnd = makeRng(level.w * 73856093 + level.h * 19349663 + level.exits.length * 83492791);
 
-  // Kerb apron: the street the lot opens onto.
-  ctx.fillStyle = palette.asphaltDeep;
-  roundRect(ctx, ox - cw * 0.42, oy - ch * 0.42, w + cw * 0.84, h + ch * 0.84, cw * 0.3);
-  ctx.fill();
+  drawKerb(ctx, cam, level, palette);
 
   // Asphalt slab.
-  const slab = ctx.createLinearGradient(ox, oy, ox, oy + h);
+  const slab = ctx.createLinearGradient(ox, oy - ch, ox + w * 0.25, oy + h);
   slab.addColorStop(0, palette.asphaltLight);
-  slab.addColorStop(1, palette.asphalt);
+  slab.addColorStop(0.55, palette.asphalt);
+  slab.addColorStop(1, shade(palette.asphalt, -0.12));
   ctx.fillStyle = slab;
-  roundRect(ctx, ox, oy, w, h, cw * 0.16);
+  roundRect(ctx, ox, oy, w, h, radius);
   ctx.fill();
 
-  // Bay markings: a dashed line between every pair of columns.
-  ctx.strokeStyle = withAlpha(palette.lanePaint, 0.3);
-  ctx.lineWidth = Math.max(1, cw * 0.035);
-  ctx.setLineDash([ch * 0.34, ch * 0.26]);
-  for (let x = 1; x < level.w; x++) {
-    ctx.beginPath();
-    ctx.moveTo(ox + x * cw, oy + ch * 0.12);
-    ctx.lineTo(ox + x * cw, oy + h - ch * 0.12);
+  ctx.save();
+  roundRect(ctx, ox, oy, w, h, radius);
+  ctx.clip();
+
+  paintGrain(ctx, ox, oy, w, h, cw, 0.38);
+  paintStains(ctx, ox, oy, w, h, cw, ch, rnd);
+  paintBayLines(ctx, level, cam, palette);
+  paintScuffs(ctx, ox, oy, w, h, cw, ch, rnd, palette);
+  // Light spilling in from each opening. Inside the clip on purpose: spilling
+  // it outward instead tints the kerb, and a lot with frontage on every side
+  // ends up wearing a mint halo.
+  for (const run of exitRuns(level.exits)) paintExitGlow(ctx, run, cam, palette);
+
+  // Ambient occlusion at the slab edge: concentric strokes falling off inward.
+  // Cheaper than a blur and it is what seats the lot into the street.
+  for (let i = 0; i < 3; i++) {
+    ctx.strokeStyle = withAlpha(palette.ink, 0.16 * (1 - i / 3));
+    ctx.lineWidth = cw * 0.11;
+    roundRect(ctx, ox + i * cw * 0.09, oy + i * ch * 0.09, w - i * cw * 0.18, h - i * ch * 0.18, radius);
     ctx.stroke();
   }
-  ctx.setLineDash([]);
+
+  // Vignette — corners a touch heavier than the middle, so the eye lands centre.
+  const vignette = ctx.createRadialGradient(
+    ox + w / 2,
+    oy + h * 0.42,
+    Math.min(w, h) * 0.28,
+    ox + w / 2,
+    oy + h / 2,
+    Math.max(w, h) * 0.72,
+  );
+  vignette.addColorStop(0, 'rgba(0,0,0,0)');
+  vignette.addColorStop(1, withAlpha(palette.ink, 0.3));
+  ctx.fillStyle = vignette;
+  ctx.fillRect(ox, oy, w, h);
+  ctx.restore();
 
   // Cell furniture.
   for (let y = 0; y < level.h; y++) {
@@ -280,6 +328,194 @@ export function drawGround(
   }
 }
 
+/** Street apron and the raised concrete lip the lot sits inside. */
+function drawKerb(
+  ctx: CanvasRenderingContext2D,
+  cam: Camera,
+  level: LevelDef,
+  palette: Palette,
+): void {
+  const { cw, ch, ox, oy } = cam;
+  const w = level.w * cw;
+  const h = level.h * ch;
+  const lip = cw * 0.2;
+  const apron = cw * 0.42;
+
+  // Street beyond the kerb. No grain pass here: the kerb and slab cover all but
+  // a few pixels of it, and stamping the pattern over the whole footprint just
+  // to have it overdrawn is the single most expensive thing in this bake.
+  ctx.fillStyle = shade(palette.asphaltDeep, -0.18);
+  roundRect(ctx, ox - apron, oy - apron, w + apron * 2, h + apron * 2, cw * 0.36);
+  ctx.fill();
+
+  // The kerb face, dropped down-screen so the lip reads as a solid edge.
+  ctx.fillStyle = shade(palette.sand, -0.66);
+  roundRect(ctx, ox - lip, oy - lip + ch * 0.08, w + lip * 2, h + lip * 2, cw * 0.2);
+  ctx.fill();
+
+  // Kerb top: weathered concrete, not fresh cream. It frames the lot, so it has
+  // to stay quieter than every car standing on it.
+  const top = ctx.createLinearGradient(ox, oy - lip, ox, oy + h + lip);
+  top.addColorStop(0, shade(palette.sand, -0.3));
+  top.addColorStop(1, shade(palette.sand, -0.5));
+  ctx.fillStyle = top;
+  roundRect(ctx, ox - lip, oy - lip, w + lip * 2, h + lip * 2, cw * 0.2);
+  ctx.fill();
+}
+
+/** Stamp the asphalt aggregate over a rect, tied to cell size so it holds density at any zoom. */
+function paintGrain(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  cw: number,
+  alpha: number,
+): void {
+  // Aggregate should grow with the lot but not track it one-for-one: scaled
+  // linearly with the cell it turns into visible static on a small grid.
+  stampGrain(ctx, x, y, w, h, Math.max(0.5, Math.min(1.15, cw / 78)), alpha);
+}
+
+/** Weathering: old spills and patched repairs, kept far below the paint in contrast. */
+function paintStains(
+  ctx: CanvasRenderingContext2D,
+  ox: number,
+  oy: number,
+  w: number,
+  h: number,
+  cw: number,
+  ch: number,
+  rnd: () => number,
+): void {
+  for (let i = 0; i < 7; i++) {
+    const cx = ox + rnd() * w;
+    const cy = oy + rnd() * h;
+    const r = cw * (0.4 + rnd() * 1.1);
+    const g = ctx.createRadialGradient(cx, cy, 0, cx, cy, r);
+    const dark = rnd() < 0.65;
+    g.addColorStop(0, dark ? 'rgba(0,0,0,0.13)' : 'rgba(255,255,255,0.05)');
+    g.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.ellipse(cx, cy, r, r * (ch / cw) * (0.7 + rnd() * 0.5), rnd() * Math.PI, 0, Math.PI * 2);
+    ctx.fill();
+  }
+}
+
+/** Tyre scuff: shallow arcs where cars have swung out of a bay for years. */
+function paintScuffs(
+  ctx: CanvasRenderingContext2D,
+  ox: number,
+  oy: number,
+  w: number,
+  h: number,
+  cw: number,
+  ch: number,
+  rnd: () => number,
+  palette: Palette,
+): void {
+  ctx.save();
+  ctx.strokeStyle = withAlpha(palette.ink, 0.09);
+  ctx.lineCap = 'round';
+  for (let i = 0; i < 5; i++) {
+    const cx = ox + rnd() * w;
+    const cy = oy + rnd() * h;
+    const r = cw * (0.8 + rnd() * 1.6);
+    const from = rnd() * Math.PI * 2;
+    ctx.lineWidth = cw * (0.05 + rnd() * 0.05);
+    ctx.save();
+    ctx.translate(cx, cy);
+    ctx.scale(1, ch / cw);
+    ctx.beginPath();
+    ctx.arc(0, 0, r, from, from + 0.7 + rnd() * 0.9);
+    ctx.stroke();
+    ctx.restore();
+  }
+  ctx.restore();
+}
+
+/** Bay markings: worn stall paint, drawn twice so the edges read as chipped. */
+function paintBayLines(
+  ctx: CanvasRenderingContext2D,
+  level: LevelDef,
+  cam: Camera,
+  palette: Palette,
+): void {
+  const { cw, ch, ox, oy } = cam;
+  const h = level.h * ch;
+
+  ctx.save();
+  ctx.lineCap = 'round';
+
+  // Stall separators between columns.
+  for (let x = 1; x < level.w; x++) {
+    const px = ox + x * cw;
+    ctx.strokeStyle = withAlpha(palette.ink, 0.2);
+    ctx.lineWidth = Math.max(1, cw * 0.05);
+    ctx.setLineDash([ch * 0.34, ch * 0.26]);
+    ctx.beginPath();
+    ctx.moveTo(px + cw * 0.02, oy + ch * 0.14);
+    ctx.lineTo(px + cw * 0.02, oy + h - ch * 0.1);
+    ctx.stroke();
+
+    ctx.strokeStyle = withAlpha(palette.lanePaint, 0.34);
+    ctx.lineWidth = Math.max(1, cw * 0.04);
+    ctx.beginPath();
+    ctx.moveTo(px, oy + ch * 0.14);
+    ctx.lineTo(px, oy + h - ch * 0.1);
+    ctx.stroke();
+  }
+  ctx.setLineDash([]);
+
+  // Bay-end ticks: short stubs at each row line, which is what makes the grid
+  // read as parking bays rather than as graph paper.
+  ctx.strokeStyle = withAlpha(palette.lanePaint, 0.16);
+  ctx.lineWidth = Math.max(1, cw * 0.035);
+  for (let y = 1; y < level.h; y++) {
+    const py = oy + y * ch;
+    for (let x = 0; x < level.w; x++) {
+      const px = ox + x * cw;
+      ctx.beginPath();
+      ctx.moveTo(px + cw * 0.3, py);
+      ctx.lineTo(px + cw * 0.7, py);
+      ctx.stroke();
+    }
+  }
+  ctx.restore();
+}
+
+/** Light spilling from an opening onto the asphalt just inside it. */
+function paintExitGlow(
+  ctx: CanvasRenderingContext2D,
+  run: { dir: Dir; from: number; to: number; fixed: number },
+  cam: Camera,
+  palette: Palette,
+): void {
+  const { cw, ch, ox, oy } = cam;
+  const horizontal = run.dir === 0 || run.dir === 2;
+  // Inward is away from the edge the opening sits on.
+  const inward = run.dir === 0 || run.dir === 3 ? 1 : -1;
+  const reach = (horizontal ? ch : cw) * 0.6;
+  const edge = horizontal
+    ? oy + (run.dir === 2 ? run.fixed + 1 : run.fixed) * ch
+    : ox + (run.dir === 1 ? run.fixed + 1 : run.fixed) * cw;
+
+  const glow = horizontal
+    ? ctx.createLinearGradient(0, edge, 0, edge + reach * inward)
+    : ctx.createLinearGradient(edge, 0, edge + reach * inward, 0);
+  glow.addColorStop(0, withAlpha(palette.mintLight, 0.22));
+  glow.addColorStop(1, withAlpha(palette.mintLight, 0));
+  ctx.fillStyle = glow;
+
+  if (horizontal) {
+    ctx.fillRect(ox + run.from * cw, inward > 0 ? edge : edge - reach, (run.to - run.from + 1) * cw, reach);
+  } else {
+    ctx.fillRect(inward > 0 ? edge : edge - reach, oy + run.from * ch, reach, (run.to - run.from + 1) * ch);
+  }
+}
+
 function drawCurbCut(
   ctx: CanvasRenderingContext2D,
   run: { dir: Dir; from: number; to: number; fixed: number },
@@ -306,32 +542,34 @@ function drawCurbCut(
     x = run.dir === 1 ? ox + (run.fixed + 1) * cw - thickness : ox + run.fixed * cw;
   }
 
-  // Soft glow marking the way out.
-  ctx.fillStyle = withAlpha(palette.mintLight, 0.22);
-  ctx.fillRect(
-    x - (horizontal ? 0 : cw * 0.2),
-    y - (horizontal ? ch * 0.2 : 0),
-    width + (horizontal ? 0 : cw * 0.4),
-    height + (horizontal ? ch * 0.4 : 0),
-  );
-
-  // Hazard stripes.
+  // Hazard stripes on a concrete apron.
   ctx.save();
   ctx.beginPath();
   ctx.rect(x, y, width, height);
   ctx.clip();
-  ctx.fillStyle = withAlpha(palette.lemon, 0.9);
+  ctx.fillStyle = withAlpha(palette.lemon, 0.92);
   ctx.fillRect(x, y, width, height);
+  // Stripes have to lean across the *narrow* axis of the opening. Marching them
+  // along the long axis for both orientations makes a vertical curb cut's
+  // "diagonals" almost parallel to it, and it reads as a solid yellow wall.
   ctx.strokeStyle = withAlpha(palette.ink, 0.55);
   ctx.lineWidth = thickness * 0.42;
   const step = thickness * 1.05;
   const span = Math.max(width, height) + thickness * 2;
   for (let i = -span; i < span; i += step) {
     ctx.beginPath();
-    ctx.moveTo(x + i, y - thickness);
-    ctx.lineTo(x + i + thickness * 2, y + height + thickness);
+    if (horizontal) {
+      ctx.moveTo(x + i, y - thickness);
+      ctx.lineTo(x + i + thickness * 2, y + height + thickness);
+    } else {
+      ctx.moveTo(x - thickness, y + i);
+      ctx.lineTo(x + width + thickness, y + i + thickness * 2);
+    }
     ctx.stroke();
   }
+  // A lit top edge so the apron reads as a raised threshold, not a decal.
+  ctx.fillStyle = withAlpha(palette.cream, 0.3);
+  ctx.fillRect(x, y, horizontal ? width : thickness * 0.22, horizontal ? thickness * 0.22 : height);
   ctx.restore();
 }
 
@@ -353,14 +591,25 @@ function drawOil(
   ctx.beginPath();
   ctx.ellipse(cx, cy, cw * 0.44, ch * 0.4, 0, 0, Math.PI * 2);
   ctx.fill();
+
   // Iridescent sheen — texture, so the slick reads without relying on colour.
-  ctx.strokeStyle = withAlpha(palette.skyLight, 0.5);
+  ctx.save();
+  ctx.globalCompositeOperation = 'lighter';
+  const sheen = [palette.sky, palette.mint, palette.coral];
   ctx.lineWidth = Math.max(1, cw * 0.03);
   for (let i = 0; i < 3; i++) {
+    ctx.strokeStyle = withAlpha(sheen[i], 0.22);
     ctx.beginPath();
     ctx.ellipse(cx, cy, cw * (0.12 + i * 0.11), ch * (0.09 + i * 0.1), 0.6, 0, Math.PI * 1.5);
     ctx.stroke();
   }
+  ctx.restore();
+
+  // A wet highlight sells the surface as slippery rather than merely dark.
+  ctx.fillStyle = withAlpha(palette.skyLight, 0.3);
+  ctx.beginPath();
+  ctx.ellipse(cx - cw * 0.12, cy - ch * 0.13, cw * 0.11, ch * 0.06, -0.5, 0, Math.PI * 2);
+  ctx.fill();
 }
 
 function drawRoundabout(
@@ -379,12 +628,18 @@ function drawRoundabout(
   // A raised turntable plate, not a smudge: it has to read as a thing you use.
   ctx.fillStyle = withAlpha(palette.ink, 0.3);
   ctx.beginPath();
-  ctx.ellipse(cx, cy + ch * 0.04, r, r * CELL_ASPECT, 0, 0, Math.PI * 2);
+  ctx.ellipse(cx, cy + ch * 0.06, r, r * CELL_ASPECT, 0, 0, Math.PI * 2);
   ctx.fill();
 
-  const plate = ctx.createRadialGradient(cx, cy - r * 0.3, r * 0.1, cx, cy, r);
-  plate.addColorStop(0, palette.sand);
-  plate.addColorStop(1, shade(palette.sand, -0.32));
+  // Rim wall, then the plate proper inset on top of it.
+  ctx.fillStyle = shade(palette.sand, -0.42);
+  ctx.beginPath();
+  ctx.ellipse(cx, cy + ch * 0.03, r, r * CELL_ASPECT, 0, 0, Math.PI * 2);
+  ctx.fill();
+
+  const plate = ctx.createRadialGradient(cx - r * 0.3, cy - r * 0.4, r * 0.1, cx, cy, r);
+  plate.addColorStop(0, shade(palette.sand, 0.1));
+  plate.addColorStop(1, shade(palette.sand, -0.3));
   ctx.fillStyle = plate;
   ctx.beginPath();
   ctx.ellipse(cx, cy, r, r * CELL_ASPECT, 0, 0, Math.PI * 2);
@@ -417,14 +672,8 @@ function drawRoundabout(
   ctx.fillStyle = withAlpha(palette.ink, 0.72);
   ctx.beginPath();
   ctx.moveTo(hx + Math.cos(tangent) * r * 0.26, hy + Math.sin(tangent) * r * 0.26);
-  ctx.lineTo(
-    hx + Math.cos(tangent + 2.4) * r * 0.22,
-    hy + Math.sin(tangent + 2.4) * r * 0.22,
-  );
-  ctx.lineTo(
-    hx + Math.cos(tangent - 2.4) * r * 0.22,
-    hy + Math.sin(tangent - 2.4) * r * 0.22,
-  );
+  ctx.lineTo(hx + Math.cos(tangent + 2.4) * r * 0.22, hy + Math.sin(tangent + 2.4) * r * 0.22);
+  ctx.lineTo(hx + Math.cos(tangent - 2.4) * r * 0.22, hy + Math.sin(tangent - 2.4) * r * 0.22);
   ctx.closePath();
   ctx.fill();
   ctx.restore();
@@ -441,23 +690,27 @@ function drawArrow(
 ): void {
   const cx = x + cw / 2;
   const cy = y + ch / 2;
-  const dx = DX[dir];
-  const dy = DY[dir];
   ctx.save();
   ctx.translate(cx, cy);
-  ctx.rotate(Math.atan2(dy, dx) + Math.PI / 2);
-  ctx.strokeStyle = withAlpha(palette.mintLight, 0.85);
-  ctx.lineWidth = Math.max(2, cw * 0.075);
+  ctx.rotate(Math.atan2(DY[dir], DX[dir]) + Math.PI / 2);
   ctx.lineCap = 'round';
   ctx.lineJoin = 'round';
-  // Two chevrons: shape-coded, so one-ways never depend on colour alone.
-  for (let i = 0; i < 2; i++) {
-    const oy = (i - 0.5) * ch * 0.24;
-    ctx.beginPath();
-    ctx.moveTo(-cw * 0.18, oy + ch * 0.1);
-    ctx.lineTo(0, oy - ch * 0.1);
-    ctx.lineTo(cw * 0.18, oy + ch * 0.1);
-    ctx.stroke();
+  // Two chevrons: shape-coded, so one-ways never depend on colour alone. The
+  // dark pass underneath keeps them legible over a pale slick or plate.
+  for (const [colour, alpha, width, dy] of [
+    [palette.ink, 0.32, 0.115, ch * 0.02],
+    [palette.mintLight, 0.92, 0.075, 0],
+  ] as const) {
+    ctx.strokeStyle = withAlpha(colour, alpha);
+    ctx.lineWidth = Math.max(2, cw * width);
+    for (let i = 0; i < 2; i++) {
+      const oy = (i - 0.5) * ch * 0.24 + dy;
+      ctx.beginPath();
+      ctx.moveTo(-cw * 0.18, oy + ch * 0.1);
+      ctx.lineTo(0, oy - ch * 0.1);
+      ctx.lineTo(cw * 0.18, oy + ch * 0.1);
+      ctx.stroke();
+    }
   }
   ctx.restore();
 }
@@ -473,18 +726,25 @@ function drawBlocker(
 ): void {
   const cx = x + cw / 2;
   const cy = y + ch / 2;
-  ctx.fillStyle = withAlpha(palette.ink, 0.22);
-  ctx.beginPath();
-  ctx.ellipse(cx + cw * 0.06, cy + ch * 0.2, cw * 0.3, ch * 0.16, 0, 0, Math.PI * 2);
-  ctx.fill();
+  // Contact shadow, stacked rather than blurred.
+  for (const [grow, alpha] of [
+    [1.35, 0.1],
+    [1.1, 0.13],
+    [0.9, 0.16],
+  ] as const) {
+    ctx.fillStyle = withAlpha(palette.ink, alpha);
+    ctx.beginPath();
+    ctx.ellipse(cx + cw * 0.06, cy + ch * 0.2, cw * 0.3 * grow, ch * 0.16 * grow, 0, 0, Math.PI * 2);
+    ctx.fill();
+  }
 
   switch (style) {
     case 1: {
       // Dumpster: a squat box with a lid, extruded like everything else.
       const w = cw * 0.66;
       const h = ch * 0.46;
-      const lift = ch * 0.22;
-      ctx.fillStyle = shade(palette.mintDeep, -0.4);
+      const lift = ch * 0.24;
+      ctx.fillStyle = shade(palette.mintDeep, -0.42);
       roundRect(ctx, cx - w / 2, cy - h / 2, w, h, cw * 0.05);
       ctx.fill();
       ctx.fillStyle = shade(palette.mintDeep, -0.22);
@@ -500,7 +760,10 @@ function drawBlocker(
         cy + h / 2 - lift,
       );
       ctx.fill();
-      ctx.fillStyle = palette.mintDeep;
+      const lid = ctx.createLinearGradient(cx - w / 2, cy - h, cx + w / 2, cy);
+      lid.addColorStop(0, shade(palette.mintDeep, 0.14));
+      lid.addColorStop(1, shade(palette.mintDeep, -0.08));
+      ctx.fillStyle = lid;
       roundRect(ctx, cx - w / 2 + cw * 0.03, cy - h / 2 - lift, w - cw * 0.06, h, cw * 0.05);
       ctx.fill();
       ctx.strokeStyle = withAlpha(palette.ink, 0.35);
@@ -513,45 +776,74 @@ function drawBlocker(
     }
     case 2: {
       // Planter: a stone tub with a clipped shrub.
-      ctx.fillStyle = shade(palette.sand, -0.3);
+      ctx.fillStyle = shade(palette.sand, -0.34);
       roundRect(ctx, cx - cw * 0.27, cy - ch * 0.04, cw * 0.54, ch * 0.32, cw * 0.06);
       ctx.fill();
-      ctx.fillStyle = palette.sand;
+      const tub = ctx.createLinearGradient(cx - cw * 0.25, cy - ch * 0.12, cx + cw * 0.25, cy + ch * 0.1);
+      tub.addColorStop(0, shade(palette.sand, 0.08));
+      tub.addColorStop(1, shade(palette.sand, -0.16));
+      ctx.fillStyle = tub;
       roundRect(ctx, cx - cw * 0.25, cy - ch * 0.12, cw * 0.5, ch * 0.22, cw * 0.05);
       ctx.fill();
-      ctx.fillStyle = shade(palette.mintDeep, -0.2);
+      ctx.fillStyle = shade(palette.mintDeep, -0.26);
       ctx.beginPath();
       ctx.ellipse(cx, cy - ch * 0.2, cw * 0.25, ch * 0.22, 0, 0, Math.PI * 2);
       ctx.fill();
       ctx.fillStyle = palette.mintDeep;
       ctx.beginPath();
-      ctx.ellipse(cx - cw * 0.05, cy - ch * 0.26, cw * 0.17, ch * 0.15, 0, 0, Math.PI * 2);
+      ctx.ellipse(cx - cw * 0.04, cy - ch * 0.25, cw * 0.19, ch * 0.17, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = shade(palette.mintDeep, 0.24);
+      ctx.beginPath();
+      ctx.ellipse(cx - cw * 0.09, cy - ch * 0.29, cw * 0.09, ch * 0.08, 0, 0, Math.PI * 2);
       ctx.fill();
       break;
     }
     case 3: {
-      // Lot wall.
-      ctx.fillStyle = shade(palette.asphaltDeep, -0.15);
+      // Lot wall: a low block with a lit cap.
+      ctx.fillStyle = shade(palette.asphaltDeep, -0.2);
       roundRect(ctx, x + cw * 0.04, y + ch * 0.04, cw * 0.92, ch * 0.92, cw * 0.08);
       ctx.fill();
-      ctx.fillStyle = withAlpha(palette.sand, 0.35);
-      roundRect(ctx, x + cw * 0.1, y + ch * 0.06, cw * 0.8, ch * 0.34, cw * 0.06);
+      const cap = ctx.createLinearGradient(x, y, x + cw, y + ch);
+      cap.addColorStop(0, withAlpha(palette.sand, 0.42));
+      cap.addColorStop(1, withAlpha(palette.sand, 0.18));
+      ctx.fillStyle = cap;
+      roundRect(ctx, x + cw * 0.1, y + ch * 0.06, cw * 0.8, ch * 0.36, cw * 0.06);
       ctx.fill();
+      // Course lines, so a wall reads as masonry at any zoom.
+      ctx.strokeStyle = withAlpha(palette.ink, 0.22);
+      ctx.lineWidth = Math.max(1, cw * 0.015);
+      for (let i = 1; i < 3; i++) {
+        ctx.beginPath();
+        ctx.moveTo(x + cw * 0.08, y + ch * (0.42 + i * 0.18));
+        ctx.lineTo(x + cw * 0.92, y + ch * (0.42 + i * 0.18));
+        ctx.stroke();
+      }
       break;
     }
     default: {
       // Traffic cone.
-      ctx.fillStyle = palette.coralDeep;
+      ctx.fillStyle = shade(palette.coralDeep, -0.28);
+      roundRect(ctx, cx - cw * 0.28, cy + ch * 0.14, cw * 0.56, ch * 0.12, cw * 0.03);
+      ctx.fill();
+      const cone = ctx.createLinearGradient(cx - cw * 0.22, cy, cx + cw * 0.22, cy);
+      cone.addColorStop(0, shade(palette.coralDeep, 0.2));
+      cone.addColorStop(0.55, palette.coralDeep);
+      cone.addColorStop(1, shade(palette.coralDeep, -0.26));
+      ctx.fillStyle = cone;
       ctx.beginPath();
-      ctx.moveTo(cx, cy - ch * 0.36);
+      ctx.moveTo(cx, cy - ch * 0.38);
       ctx.lineTo(cx + cw * 0.22, cy + ch * 0.2);
       ctx.lineTo(cx - cw * 0.22, cy + ch * 0.2);
       ctx.closePath();
       ctx.fill();
       ctx.fillStyle = palette.cream;
-      ctx.fillRect(cx - cw * 0.14, cy - ch * 0.08, cw * 0.28, ch * 0.09);
-      ctx.fillStyle = shade(palette.coralDeep, -0.3);
-      roundRect(ctx, cx - cw * 0.28, cy + ch * 0.16, cw * 0.56, ch * 0.1, cw * 0.03);
+      ctx.beginPath();
+      ctx.moveTo(cx - cw * 0.145, cy - ch * 0.01);
+      ctx.lineTo(cx + cw * 0.145, cy - ch * 0.01);
+      ctx.lineTo(cx + cw * 0.175, cy + ch * 0.08);
+      ctx.lineTo(cx - cw * 0.175, cy + ch * 0.08);
+      ctx.closePath();
       ctx.fill();
     }
   }
@@ -561,11 +853,64 @@ function drawBlocker(
  * Vehicles
  * ------------------------------------------------------------------ */
 
+/**
+ * Screen-space rect of an upper volume on a body box.
+ *
+ * `from`/`to` are tail-to-nose fractions, so they flip with the facing; the
+ * inset always eats the across-axis.
+ */
+function volumeRect(
+  vol: Volume,
+  x0: number,
+  y0: number,
+  bw: number,
+  bh: number,
+  facing: Dir,
+): { x: number; y: number; w: number; h: number } {
+  const horizontal = facing === 1 || facing === 3;
+  const forwardPositive = facing === 1 || facing === 2;
+  const span = vol.to - vol.from;
+  const start = forwardPositive ? vol.from : 1 - vol.to;
+  if (horizontal) {
+    const inset = (bh * vol.inset) / 2;
+    return { x: x0 + start * bw, y: y0 + inset, w: span * bw, h: bh - inset * 2 };
+  }
+  const inset = (bw * vol.inset) / 2;
+  return { x: x0 + inset, y: y0 + start * bh, w: bw - inset * 2, h: span * bh };
+}
+
+/**
+ * Everything about a vehicle that decides its picture, independent of position.
+ *
+ * Built by concatenation rather than `join`: this runs once per car per frame,
+ * and the intermediate array is garbage worth not making.
+ */
+function spriteKey(v: VehicleView, bw: number, bh: number, hpx: number): string {
+  return (
+    v.kind +
+    '|' +
+    v.facing +
+    '|' +
+    v.color +
+    '|' +
+    v.tags +
+    '|' +
+    (v.isRide ? 1 : 0) +
+    '|' +
+    Math.round(bw * 2) +
+    '|' +
+    Math.round(bh * 2) +
+    '|' +
+    Math.round(hpx * 2)
+  );
+}
+
 export function drawVehicle(
   ctx: CanvasRenderingContext2D,
   v: VehicleView,
   cam: Camera,
   palette: Palette,
+  dpr = 2,
 ): void {
   const { cw, ch, ox, oy } = cam;
   const bounds = vehicleBounds(v);
@@ -584,15 +929,9 @@ export function drawVehicle(
   const bw = (bounds.x1 - bounds.x0 - mx * 2) * cw;
   const bh = (bounds.y1 - bounds.y0 - my * 2) * ch;
 
-  const heightUnits = VEHICLE_HEIGHT[v.kind] * (1 - v.squash * 0.22);
-  const hpx = heightUnits * cw;
-  const bevelX = BEVEL * cw;
-  const bevelY = BEVEL * ch;
-  const radius = Math.min(bw, bh) * 0.26;
-
-  // An ambulance is identifiable at a glance whatever livery is equipped —
-  // vehicle identity is never colour-only, and this one carries information.
-  const body = v.kind === VehicleKind.Ambulance ? palette.cream : v.color;
+  const hpx = VEHICLE_HEIGHT[v.kind] * (1 - v.squash * 0.22) * cw;
+  const leanPx = Math.max(-0.09, Math.min(0.09, v.leanX)) * cw;
+  const leanPy = Math.max(-0.09, Math.min(0.09, v.leanY)) * ch;
 
   ctx.save();
   ctx.globalAlpha = v.alpha;
@@ -605,107 +944,220 @@ export function drawVehicle(
     ctx.translate(-pivotX, -pivotY);
   }
 
-  // Ground shadow, thrown down-right by the warm key light.
-  ctx.fillStyle = palette.shadow;
-  roundRect(
-    ctx,
-    x0 + cw * 0.07,
-    y0 + ch * 0.12,
-    bw,
-    bh,
-    radius,
-  );
-  ctx.fill();
+  // A car that is not mid-bump draws the same picture every frame, so it is
+  // worth caching. Lean decays asymptotically, hence a threshold rather than
+  // an equality test.
+  const still = v.squash < 0.002 && Math.abs(leanPx) < 0.15 && Math.abs(leanPy) < 0.15;
+  const padL = cw * 0.2;
+  const padT = hpx + ch * 0.34;
+  const padR = cw * 0.3;
+  const padB = ch * 0.36;
 
-  // Base plate — the underside of the brick, always darkest.
-  ctx.fillStyle = shade(body, -0.42);
-  roundRect(ctx, x0, y0, bw, bh, radius);
-  ctx.fill();
-
-  // Top face, inset and lifted.
-  const leanPx = Math.max(-0.09, Math.min(0.09, v.leanX)) * cw;
-  const leanPy = Math.max(-0.09, Math.min(0.09, v.leanY)) * ch;
-  const tx = x0 + bevelX + leanPx;
-  const ty = y0 + bevelY - hpx + leanPy;
-  const tw = bw - bevelX * 2;
-  const th = bh - bevelY * 2;
-
-  // Three lit side faces. The north face is behind the top and never shows.
-  ctx.fillStyle = shade(body, -0.2);
-  quad(ctx, x0, y0 + bh, x0 + bw, y0 + bh, tx + tw, ty + th, tx, ty + th);
-  ctx.fill();
-  ctx.fillStyle = shade(body, -0.3);
-  quad(ctx, x0 + bw, y0, x0 + bw, y0 + bh, tx + tw, ty + th, tx + tw, ty);
-  ctx.fill();
-  ctx.fillStyle = shade(body, -0.08);
-  quad(ctx, x0, y0, x0, y0 + bh, tx, ty + th, tx, ty);
-  ctx.fill();
-
-  // Wheels peek out at the base, which sells the object and marks the axis.
-  drawWheels(ctx, v, x0, y0, bw, bh, palette);
-
-  ctx.fillStyle = body;
-  roundRect(ctx, tx, ty, tw, th, radius);
-  ctx.fill();
-
-  // A dark rim keeps bumper-to-bumper cars of the same colour distinct.
-  ctx.strokeStyle = withAlpha(palette.ink, 0.34);
-  ctx.lineWidth = Math.max(1, cw * 0.018);
-  roundRect(ctx, tx, ty, tw, th, radius);
-  ctx.stroke();
-
-  drawVehicleDetail(ctx, v, tx, ty, tw, th, radius, palette, body);
-
-  // Selection, hint and blocker-flash all speak through the same rim, at
-  // volumes that match what they cost: a hint is paid for, so it shouts.
-  if (v.highlight > 0.02 || v.hint > 0.02 || v.flash > 0.02) {
-    const strength = Math.max(v.highlight, v.hint, v.flash);
-    const colour =
-      v.flash > 0.02 ? palette.coral : v.hint > 0.02 ? palette.lemon : palette.cream;
-
-    if (v.hint > 0.02 || v.flash > 0.02) {
-      ctx.strokeStyle = withAlpha(colour, strength * 0.35);
-      ctx.lineWidth = Math.max(4, cw * 0.16) * strength;
-      roundRect(ctx, tx, ty, tw, th, radius);
-      ctx.stroke();
-    }
-
-    ctx.strokeStyle = withAlpha(colour, v.flash > 0.02 ? v.flash : v.hint > 0.02 ? 1 : strength * 0.9);
-    ctx.lineWidth = Math.max(2.5, cw * 0.06) * (1 + strength * 0.4);
-    roundRect(ctx, tx, ty, tw, th, radius);
-    ctx.stroke();
+  if (still) {
+    const cached = sprite(spriteKey(v, bw, bh, hpx), bw + padL + padR, bh + padT + padB, dpr, (sctx) => {
+      paintVehicle(sctx, v, padL, padT, bw, bh, hpx, 0, 0, palette);
+    });
+    if (cached) ctx.drawImage(cached.canvas, x0 - padL, y0 - padT, cached.w, cached.h);
+    else paintVehicle(ctx, v, x0, y0, bw, bh, hpx, 0, 0, palette);
+  } else {
+    paintVehicle(ctx, v, x0, y0, bw, bh, hpx, leanPx, leanPy, palette);
   }
 
+  drawStateRing(ctx, v, x0, y0, bw, bh, hpx, leanPx, leanPy, cw, palette);
   ctx.restore();
 }
 
-function drawWheels(
+/**
+ * Paint a whole vehicle with its body box at (`x0`,`y0`,`bw`,`bh`).
+ *
+ * Shared by the cached and the live path so there is exactly one description of
+ * what a car looks like.
+ */
+function paintVehicle(
   ctx: CanvasRenderingContext2D,
   v: VehicleView,
-  x: number,
-  y: number,
-  w: number,
-  h: number,
+  x0: number,
+  y0: number,
+  bw: number,
+  bh: number,
+  hpx: number,
+  leanPx: number,
+  leanPy: number,
   palette: Palette,
 ): void {
-  const horizontal = v.facing === 1 || v.facing === 3;
-  ctx.fillStyle = withAlpha(palette.ink, 0.72);
-  const axles = v.len >= 4 ? 3 : 2;
-  for (let i = 0; i < axles; i++) {
-    const t = axles === 2 ? 0.24 + i * 0.52 : 0.18 + i * 0.32;
-    if (horizontal) {
-      const wx = x + w * t - w * 0.06;
-      ctx.fillRect(wx, y - h * 0.04, w * 0.12, h * 0.1);
-      ctx.fillRect(wx, y + h * 0.94, w * 0.12, h * 0.1);
-    } else {
-      const wy = y + h * t - h * 0.06;
-      ctx.fillRect(x - w * 0.04, wy, w * 0.1, h * 0.12);
-      ctx.fillRect(x + w * 0.94, wy, w * 0.1, h * 0.12);
-    }
+  const unit = Math.min(bw, bh);
+  const bevelX = BEVEL * unit;
+  const bevelY = BEVEL * unit * CELL_ASPECT;
+  const radius = Math.min(bw, bh) * 0.26;
+
+  // An ambulance is identifiable at a glance whatever livery is equipped —
+  // vehicle identity is never colour-only, and this one carries information.
+  const body = v.kind === VehicleKind.Ambulance ? palette.cream : v.color;
+  const bodyH = hpx * BODY_SHARE;
+  const stackBudget = hpx - bodyH;
+
+  paintContactShadow(ctx, x0, y0, bw, bh, radius, unit, palette);
+
+  // Wheels sit under the body, so they are laid down first and peek out.
+  paintWheels(ctx, v, x0, y0, bw, bh, palette);
+
+  // Base plate — the underside of the brick, always darkest.
+  ctx.fillStyle = shade(body, -0.46);
+  roundRect(ctx, x0, y0, bw, bh, radius);
+  ctx.fill();
+
+  // Body top face, inset and lifted.
+  const tx = x0 + bevelX + leanPx;
+  const ty = y0 + bevelY - bodyH + leanPy;
+  const tw = bw - bevelX * 2;
+  const th = bh - bevelY * 2;
+
+  paintSides(ctx, x0, y0, bw, bh, tx, ty, tw, th, body);
+
+  const panel = ctx.createLinearGradient(tx, ty, tx + tw * 0.45, ty + th);
+  panel.addColorStop(0, shade(body, 0.12));
+  panel.addColorStop(0.5, body);
+  panel.addColorStop(1, shade(body, -0.1));
+  ctx.fillStyle = panel;
+  roundRect(ctx, tx, ty, tw, th, radius);
+  ctx.fill();
+
+  paintBodyDetail(ctx, v, tx, ty, tw, th, radius, palette);
+
+  // Upper volumes: cabin, cargo box, roof sign. Painter's order by screen
+  // bottom edge, so a volume nearer the viewer covers one behind it.
+  const volumes = VOLUMES[v.kind];
+  const stack = volumes
+    .map((vol) => ({ vol, r: volumeRect(vol, tx, ty, tw, th, v.facing) }))
+    .sort((a, b) => a.r.y + a.r.h - (b.r.y + b.r.h));
+  for (const { vol, r } of stack) {
+    paintVolume(ctx, v, vol, r, stackBudget * vol.lift, unit, palette, body, leanPx, leanPy);
+  }
+
+  // A dark rim keeps bumper-to-bumper cars of the same colour distinct, and a
+  // light one along the key side sells the bevel.
+  ctx.strokeStyle = withAlpha(palette.ink, 0.36);
+  ctx.lineWidth = Math.max(1, unit * 0.035);
+  roundRect(ctx, tx, ty, tw, th, radius);
+  ctx.stroke();
+
+  const rim = ctx.createLinearGradient(tx, ty, tx + tw * 0.6, ty + th * 0.6);
+  rim.addColorStop(0, withAlpha(palette.cream, 0.28));
+  rim.addColorStop(1, withAlpha(palette.cream, 0));
+  ctx.strokeStyle = rim;
+  ctx.lineWidth = Math.max(1, unit * 0.022);
+  roundRect(ctx, tx + unit * 0.012, ty + unit * 0.012, tw - unit * 0.024, th - unit * 0.024, radius);
+  ctx.stroke();
+}
+
+/** Soft contact shadow, stacked from wide-and-faint to tight-and-dark. */
+function paintContactShadow(
+  ctx: CanvasRenderingContext2D,
+  x0: number,
+  y0: number,
+  bw: number,
+  bh: number,
+  radius: number,
+  unit: number,
+  palette: Palette,
+): void {
+  const offX = unit * 0.09;
+  const offY = unit * 0.14;
+  for (const [grow, alpha] of [
+    [unit * 0.11, 0.09],
+    [unit * 0.055, 0.12],
+    [0, 0.15],
+  ] as const) {
+    ctx.fillStyle = withAlpha(palette.ink, alpha);
+    roundRect(ctx, x0 + offX - grow, y0 + offY - grow, bw + grow * 2, bh + grow * 2, radius + grow);
+    ctx.fill();
   }
 }
 
-function drawVehicleDetail(
+/** The three lit side faces between a base rect and its lifted top. */
+function paintSides(
+  ctx: CanvasRenderingContext2D,
+  x0: number,
+  y0: number,
+  bw: number,
+  bh: number,
+  tx: number,
+  ty: number,
+  tw: number,
+  th: number,
+  body: string,
+): void {
+  // South face — furthest from the key light.
+  ctx.fillStyle = shade(body, -0.24);
+  quad(ctx, x0, y0 + bh, x0 + bw, y0 + bh, tx + tw, ty + th, tx, ty + th);
+  ctx.fill();
+  // East face.
+  ctx.fillStyle = shade(body, -0.33);
+  quad(ctx, x0 + bw, y0, x0 + bw, y0 + bh, tx + tw, ty + th, tx + tw, ty);
+  ctx.fill();
+  // West face — catches the key.
+  ctx.fillStyle = shade(body, -0.06);
+  quad(ctx, x0, y0, x0, y0 + bh, tx, ty + th, tx, ty);
+  ctx.fill();
+}
+
+/** A cabin, cargo box or roof sign standing on the body's top face. */
+function paintVolume(
+  ctx: CanvasRenderingContext2D,
+  v: VehicleView,
+  vol: Volume,
+  r: { x: number; y: number; w: number; h: number },
+  lift: number,
+  unit: number,
+  palette: Palette,
+  body: string,
+  leanPx: number,
+  leanPy: number,
+): void {
+  if (r.w <= 0 || r.h <= 0 || lift <= 0) return;
+  const bevel = BEVEL * unit * 0.6;
+  const radius = Math.min(r.w, r.h) * 0.24;
+  const tx = r.x + bevel + leanPx * 0.5;
+  const ty = r.y + bevel * CELL_ASPECT - lift + leanPy * 0.5;
+  const tw = r.w - bevel * 2;
+  const th = r.h - bevel * 2 * CELL_ASPECT;
+  if (tw <= 0 || th <= 0) return;
+
+  // The taxi's roof sign is the one volume that is not body-coloured.
+  const isSign = v.kind === VehicleKind.Taxi && vol.inset > 0.4;
+  const shell = isSign ? palette.lemon : body;
+
+  // Ambient occlusion where the volume meets the body — the join that makes it
+  // read as a separate object rather than a decal.
+  ctx.fillStyle = withAlpha(palette.ink, 0.16);
+  roundRect(ctx, r.x - bevel * 0.5, r.y - bevel * 0.5, r.w + bevel, r.h + bevel, radius);
+  ctx.fill();
+
+  paintSides(ctx, r.x, r.y, r.w, r.h, tx, ty, tw, th, shell);
+
+  const top = ctx.createLinearGradient(tx, ty, tx + tw * 0.5, ty + th);
+  top.addColorStop(0, shade(shell, 0.16));
+  top.addColorStop(1, shade(shell, -0.08));
+  ctx.fillStyle = top;
+  roundRect(ctx, tx, ty, tw, th, radius);
+  ctx.fill();
+
+  if (vol.glass) paintGlass(ctx, v, tx, ty, tw, th, radius, palette);
+  else if (!isSign) paintPanelLines(ctx, v, tx, ty, tw, th, radius, palette);
+  else {
+    ctx.fillStyle = withAlpha(palette.ink, 0.75);
+    roundRect(ctx, tx + tw * 0.16, ty + th * 0.3, tw * 0.68, th * 0.4, radius * 0.4);
+    ctx.fill();
+  }
+
+  ctx.strokeStyle = withAlpha(palette.ink, 0.34);
+  ctx.lineWidth = Math.max(1, unit * 0.026);
+  roundRect(ctx, tx, ty, tw, th, radius);
+  ctx.stroke();
+}
+
+/** Glass canopy: dark laminate, a roof panel down the spine and one sun streak. */
+function paintGlass(
   ctx: CanvasRenderingContext2D,
   v: VehicleView,
   x: number,
@@ -714,98 +1166,295 @@ function drawVehicleDetail(
   h: number,
   radius: number,
   palette: Palette,
-  body: string,
+): void {
+  ctx.save();
+  roundRect(ctx, x, y, w, h, radius);
+  ctx.clip();
+
+  // Deliberately dark laminate. Glass that is lighter than the paint turns
+  // every car into a window with a car around it, and the lot loses the colour
+  // it needs for the player to tell one vehicle from the next.
+  const glass = ctx.createLinearGradient(x, y, x + w * 0.7, y + h);
+  glass.addColorStop(0, withAlpha(palette.skyDeep, 0.78));
+  glass.addColorStop(0.5, withAlpha(palette.asphaltDeep, 0.88));
+  glass.addColorStop(1, withAlpha(palette.ink, 0.92));
+  ctx.fillStyle = glass;
+  ctx.fillRect(x, y, w, h);
+
+  // Roof panel: a body-coloured band across the travel axis, so the greenhouse
+  // splits into a windscreen and a rear window.
+  const horizontal = v.facing === 1 || v.facing === 3;
+  ctx.fillStyle = withAlpha(palette.cream, 0.1);
+  if (horizontal) ctx.fillRect(x + w * 0.42, y - h, w * 0.16, h * 3);
+  else ctx.fillRect(x - w, y + h * 0.42, w * 3, h * 0.16);
+
+  // A single specular streak across the glass, angled against the key light.
+  ctx.save();
+  ctx.globalCompositeOperation = 'lighter';
+  ctx.translate(x + w * 0.3, y + h * 0.28);
+  ctx.rotate(-0.6);
+  const streak = ctx.createLinearGradient(0, -h * 0.4, 0, h * 0.4);
+  streak.addColorStop(0, 'rgba(255,255,255,0)');
+  streak.addColorStop(0.5, 'rgba(255,255,255,0.17)');
+  streak.addColorStop(1, 'rgba(255,255,255,0)');
+  ctx.fillStyle = streak;
+  ctx.fillRect(-w, -h * 0.28, w * 2, h * 0.56);
+  ctx.restore();
+  ctx.restore();
+}
+
+/** Cargo shell: roller-door ribs, which is what makes a box read as a box. */
+function paintPanelLines(
+  ctx: CanvasRenderingContext2D,
+  v: VehicleView,
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  radius: number,
+  palette: Palette,
+): void {
+  ctx.save();
+  roundRect(ctx, x, y, w, h, radius);
+  ctx.clip();
+  const horizontal = v.facing === 1 || v.facing === 3;
+  const span = horizontal ? w : h;
+  const step = Math.max(4, span / 6);
+  ctx.strokeStyle = withAlpha(palette.ink, 0.14);
+  ctx.lineWidth = Math.max(1, span * 0.014);
+  for (let d = step * 0.5; d < span; d += step) {
+    ctx.beginPath();
+    if (horizontal) {
+      ctx.moveTo(x + d, y);
+      ctx.lineTo(x + d, y + h);
+    } else {
+      ctx.moveTo(x, y + d);
+      ctx.lineTo(x + w, y + d);
+    }
+    ctx.stroke();
+  }
+
+  // Ambulance livery rides on the cargo shell, not the body, so it survives any
+  // equipped colour scheme.
+  if (v.kind === VehicleKind.Ambulance) {
+    const bar = Math.min(w, h) * 0.42;
+    const cx = x + w / 2;
+    const cy = y + h / 2;
+    ctx.fillStyle = palette.coralDeep;
+    ctx.fillRect(cx - bar / 2, cy - bar * 0.18, bar, bar * 0.36);
+    ctx.fillRect(cx - bar * 0.18, cy - bar / 2, bar * 0.36, bar);
+  }
+  ctx.restore();
+}
+
+function paintWheels(
+  ctx: CanvasRenderingContext2D,
+  v: VehicleView,
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  palette: Palette,
+): void {
+  const horizontal = v.facing === 1 || v.facing === 3;
+  const axles = v.len >= 4 ? 3 : 2;
+  const tyre = withAlpha(palette.ink, 0.85);
+  const hub = withAlpha(palette.asphaltLight, 0.9);
+
+  for (let i = 0; i < axles; i++) {
+    const t = axles === 2 ? 0.24 + i * 0.52 : 0.18 + i * 0.32;
+    if (horizontal) {
+      const wx = x + w * t - w * 0.055;
+      const ww = w * 0.11;
+      const wh = h * 0.13;
+      for (const wy of [y - h * 0.055, y + h * 0.925]) {
+        ctx.fillStyle = tyre;
+        roundRect(ctx, wx, wy, ww, wh, ww * 0.32);
+        ctx.fill();
+        ctx.fillStyle = hub;
+        roundRect(ctx, wx + ww * 0.28, wy + wh * 0.34, ww * 0.44, wh * 0.32, ww * 0.16);
+        ctx.fill();
+      }
+    } else {
+      const wy = y + h * t - h * 0.055;
+      const ww = w * 0.13;
+      const wh = h * 0.11;
+      for (const wx of [x - w * 0.055, x + w * 0.925]) {
+        ctx.fillStyle = tyre;
+        roundRect(ctx, wx, wy, ww, wh, wh * 0.32);
+        ctx.fill();
+        ctx.fillStyle = hub;
+        roundRect(ctx, wx + ww * 0.34, wy + wh * 0.28, ww * 0.32, wh * 0.44, wh * 0.16);
+        ctx.fill();
+      }
+    }
+  }
+}
+
+/**
+ * Detail on the body's top face: lights, badges and tags.
+ *
+ * Drawn in a frame where +u runs tail to nose, so "at the nose" is one sign
+ * rather than four cases.
+ */
+function paintBodyDetail(
+  ctx: CanvasRenderingContext2D,
+  v: VehicleView,
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  radius: number,
+  palette: Palette,
 ): void {
   const horizontal = v.facing === 1 || v.facing === 3;
   const forwardPositive = v.facing === 1 || v.facing === 2;
-  const length = horizontal ? w : h;
-  const width = horizontal ? h : w;
 
-  // Work in a frame where +u runs from tail to nose and +t is across the body.
   ctx.save();
+  roundRect(ctx, x, y, w, h, radius);
+  ctx.clip();
   ctx.translate(x + w / 2, y + h / 2);
   if (horizontal) ctx.rotate(forwardPositive ? 0 : Math.PI);
   else ctx.rotate(forwardPositive ? Math.PI / 2 : -Math.PI / 2);
 
+  const length = horizontal ? w : h;
+  const width = horizontal ? h : w;
   const halfL = length / 2;
   const halfW = width / 2;
-  const isBig =
-    v.kind === VehicleKind.BoxTruck ||
-    v.kind === VehicleKind.Trailer ||
-    v.kind === VehicleKind.Bus ||
-    v.kind === VehicleKind.Van ||
-    v.kind === VehicleKind.Ambulance;
 
-  // Cargo body / roof panel — the silhouette cue that separates the classes.
-  if (isBig) {
-    ctx.fillStyle =
-      v.kind === VehicleKind.Ambulance ? withAlpha(palette.coral, 0.16) : shade(body, 0.16);
-    roundRect(ctx, -halfL + length * 0.06, -halfW * 0.82, length * 0.56, halfW * 1.64, radius * 0.5);
+  // Bonnet shading: the nose reads as a separate plane from the cabin.
+  ctx.fillStyle = withAlpha(palette.cream, 0.07);
+  roundRect(ctx, halfL - length * 0.3, -halfW * 0.92, length * 0.3, halfW * 1.84, radius * 0.4);
+  ctx.fill();
+
+  // Headlights: a warm lens with a glow, so facing reads even at a glance.
+  // Two distinct lamps, not a light bar: they have to stay separated or the
+  // nose reads as a white bumper and the facing cue is lost.
+  const lensL = length * 0.045;
+  const lensW = halfW * 0.26;
+  for (const side of [-1, 1]) {
+    const ly = side * halfW * 0.62;
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    const glow = ctx.createRadialGradient(halfL - lensL, ly, 0, halfL - lensL, ly, length * 0.09);
+    glow.addColorStop(0, withAlpha(palette.lemon, 0.28));
+    glow.addColorStop(1, withAlpha(palette.lemon, 0));
+    ctx.fillStyle = glow;
+    ctx.beginPath();
+    ctx.arc(halfL - lensL, ly, length * 0.09, 0, Math.PI * 2);
     ctx.fill();
-    if (v.kind === VehicleKind.Ambulance) {
-      ctx.fillStyle = palette.coralDeep;
-      const bar = Math.min(length * 0.09, halfW * 0.3);
-      const cx = -length * 0.14;
-      ctx.fillRect(cx - bar / 2, -halfW * 0.42, bar, halfW * 0.84);
-      ctx.fillRect(cx - halfW * 0.42, -bar / 2, halfW * 0.84, bar);
-      // Light bar on the roof, so the class reads even at a glance.
-      ctx.fillStyle = palette.sky;
-      roundRect(ctx, halfL - length * 0.46, -halfW * 0.5, length * 0.05, halfW, radius * 0.2);
-      ctx.fill();
-    }
+    ctx.restore();
+
+    ctx.fillStyle = palette.cream;
+    roundRect(ctx, halfL - lensL * 2.2, ly - lensW / 2, lensL * 1.6, lensW, lensW * 0.35);
+    ctx.fill();
   }
-
-  // Windscreen, always at the nose end: this is how facing reads.
-  ctx.fillStyle = withAlpha(palette.skyLight, 0.9);
-  roundRect(
-    ctx,
-    halfL - length * (isBig ? 0.3 : 0.4),
-    -halfW * 0.68,
-    length * (isBig ? 0.16 : 0.26),
-    halfW * 1.36,
-    radius * 0.4,
-  );
-  ctx.fill();
-
-  // Light strip — the "grin".
-  ctx.fillStyle = palette.cream;
-  roundRect(ctx, halfL - length * 0.09, -halfW * 0.74, length * 0.05, halfW * 1.48, radius * 0.3);
-  ctx.fill();
 
   // Tail lights.
-  ctx.fillStyle = withAlpha(palette.coralDeep, 0.85);
-  roundRect(ctx, -halfL + length * 0.03, -halfW * 0.66, length * 0.035, halfW * 1.32, radius * 0.25);
-  ctx.fill();
-
-  if (v.kind === VehicleKind.Taxi) {
-    ctx.fillStyle = palette.ink;
-    roundRect(ctx, -length * 0.06, -halfW * 0.34, length * 0.12, halfW * 0.68, radius * 0.3);
+  for (const side of [-1, 1]) {
+    ctx.fillStyle = withAlpha(palette.coralDeep, 0.92);
+    roundRect(
+      ctx,
+      -halfL + length * 0.02,
+      side * halfW * 0.55 - halfW * 0.2,
+      length * 0.05,
+      halfW * 0.4,
+      halfW * 0.14,
+    );
     ctx.fill();
   }
 
+  // Grille shadow under the nose lip.
+  ctx.fillStyle = withAlpha(palette.ink, 0.18);
+  roundRect(ctx, halfL - length * 0.035, -halfW * 0.78, length * 0.03, halfW * 1.56, radius * 0.2);
+  ctx.fill();
+
   if (v.tags & VehicleTag.Vip) {
-    ctx.strokeStyle = palette.lemon;
-    ctx.lineWidth = Math.max(1.5, width * 0.08);
-    roundRect(ctx, -halfL + length * 0.1, -halfW * 0.55, length * 0.8, halfW * 1.1, radius * 0.4);
+    // A gold coachline, drawn on the paint rather than as a ring, so it does
+    // not compete with the selection and hint rings.
+    ctx.strokeStyle = withAlpha(palette.lemon, 0.95);
+    ctx.lineWidth = Math.max(1.5, width * 0.07);
+    ctx.beginPath();
+    ctx.moveTo(-halfL + length * 0.08, -halfW * 0.72);
+    ctx.lineTo(halfL - length * 0.12, -halfW * 0.72);
+    ctx.moveTo(-halfL + length * 0.08, halfW * 0.72);
+    ctx.lineTo(halfL - length * 0.12, halfW * 0.72);
     ctx.stroke();
   }
   if (v.tags & VehicleTag.Trunk) {
-    ctx.fillStyle = palette.lemon;
-    roundRect(ctx, -halfL + length * 0.08, -halfW * 0.42, length * 0.2, halfW * 0.84, radius * 0.3);
+    // A strapped crate on the boot lid.
+    ctx.fillStyle = shade(palette.lemon, -0.1);
+    roundRect(ctx, -halfL + length * 0.06, -halfW * 0.46, length * 0.22, halfW * 0.92, radius * 0.3);
     ctx.fill();
-    ctx.fillStyle = palette.ink;
+    ctx.strokeStyle = withAlpha(palette.ink, 0.6);
+    ctx.lineWidth = Math.max(1, width * 0.05);
     ctx.beginPath();
-    ctx.arc(-halfL + length * 0.18, 0, width * 0.06, 0, Math.PI * 2);
-    ctx.fill();
+    ctx.moveTo(-halfL + length * 0.17, -halfW * 0.46);
+    ctx.lineTo(-halfL + length * 0.17, halfW * 0.46);
+    ctx.stroke();
   }
   if (v.isRide) {
-    // Your Ride wears a roof stripe so it is findable in a packed lot.
-    ctx.fillStyle = withAlpha(palette.cream, 0.6);
-    roundRect(ctx, -length * 0.02, -halfW * 0.8, length * 0.04, halfW * 1.6, radius * 0.2);
+    // Your Ride wears twin racing stripes so it is findable in a packed lot.
+    ctx.fillStyle = withAlpha(palette.cream, 0.55);
+    for (const side of [-1, 1]) {
+      ctx.fillRect(-halfL, side * halfW * 0.2 - halfW * 0.05, length, halfW * 0.1);
+    }
+  }
+  if (v.kind === VehicleKind.Ambulance) {
+    // Light bar across the nose of the cab.
+    ctx.fillStyle = palette.sky;
+    roundRect(ctx, halfL - length * 0.2, -halfW * 0.5, length * 0.05, halfW, radius * 0.2);
+    ctx.fill();
+    ctx.fillStyle = palette.coral;
+    roundRect(ctx, halfL - length * 0.2, -halfW * 0.5, length * 0.05, halfW * 0.45, radius * 0.2);
     ctx.fill();
   }
 
   ctx.restore();
+}
+
+/**
+ * Selection, hint and blocker-flash speak through one ring, at volumes that
+ * match what they cost: a hint is paid for, so it shouts.
+ */
+function drawStateRing(
+  ctx: CanvasRenderingContext2D,
+  v: VehicleView,
+  x0: number,
+  y0: number,
+  bw: number,
+  bh: number,
+  hpx: number,
+  leanPx: number,
+  leanPy: number,
+  cw: number,
+  palette: Palette,
+): void {
+  if (v.highlight <= 0.02 && v.hint <= 0.02 && v.flash <= 0.02) return;
+
+  const unit = Math.min(bw, bh);
+  const bevelX = BEVEL * unit;
+  const bevelY = BEVEL * unit * CELL_ASPECT;
+  const radius = unit * 0.26;
+  const tx = x0 + bevelX + leanPx;
+  const ty = y0 + bevelY - hpx * BODY_SHARE + leanPy;
+  const tw = bw - bevelX * 2;
+  const th = bh - bevelY * 2;
+
+  const strength = Math.max(v.highlight, v.hint, v.flash);
+  const colour = v.flash > 0.02 ? palette.coral : v.hint > 0.02 ? palette.lemon : palette.cream;
+
+  if (v.hint > 0.02 || v.flash > 0.02) {
+    ctx.strokeStyle = withAlpha(colour, strength * 0.35);
+    ctx.lineWidth = Math.max(4, cw * 0.16) * strength;
+    roundRect(ctx, tx, ty, tw, th, radius);
+    ctx.stroke();
+  }
+
+  ctx.strokeStyle = withAlpha(colour, v.flash > 0.02 ? v.flash : v.hint > 0.02 ? 1 : strength * 0.9);
+  ctx.lineWidth = Math.max(2.5, cw * 0.06) * (1 + strength * 0.4);
+  roundRect(ctx, tx, ty, tw, th, radius);
+  ctx.stroke();
 }
 
 /* ------------------------------------------------------------------ *
@@ -820,6 +1469,14 @@ export function drawPreview(
 ): void {
   const { cw, ch, ox, oy } = cam;
   ctx.save();
+
+  // A soft trail under the dashes: the route reads as a lane, not as confetti.
+  ctx.fillStyle = withAlpha(preview.exits ? palette.mintLight : palette.cream, 0.1);
+  for (const cell of preview.cells) {
+    roundRect(ctx, ox + (cell.x + 0.1) * cw, oy + (cell.y + 0.1) * ch, cw * 0.8, ch * 0.8, cw * 0.2);
+    ctx.fill();
+  }
+
   ctx.lineWidth = Math.max(2, cw * 0.05);
   ctx.setLineDash([cw * 0.16, cw * 0.14]);
   ctx.strokeStyle = withAlpha(preview.exits ? palette.mintLight : palette.cream, 0.75);
@@ -828,25 +1485,23 @@ export function drawPreview(
     ctx.stroke();
   }
   ctx.setLineDash([]);
+
   if (preview.blocked) {
-    ctx.fillStyle = withAlpha(palette.coral, 0.3);
-    roundRect(
-      ctx,
-      ox + (preview.blocked.x + 0.08) * cw,
-      oy + (preview.blocked.y + 0.08) * ch,
-      cw * 0.84,
-      ch * 0.84,
-      cw * 0.18,
-    );
+    const bx = ox + (preview.blocked.x + 0.5) * cw;
+    const by = oy + (preview.blocked.y + 0.5) * ch;
+    const g = ctx.createRadialGradient(bx, by, 0, bx, by, cw * 0.6);
+    g.addColorStop(0, withAlpha(palette.coral, 0.42));
+    g.addColorStop(1, withAlpha(palette.coral, 0));
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.arc(bx, by, cw * 0.6, 0, Math.PI * 2);
     ctx.fill();
   }
   ctx.restore();
 }
 
-export function drawParticles(
-  ctx: CanvasRenderingContext2D,
-  particles: readonly Particle[],
-): void {
+export function drawParticles(ctx: CanvasRenderingContext2D, particles: readonly Particle[]): void {
+  ctx.save();
   for (const p of particles) {
     const t = p.life / p.maxLife;
     ctx.globalAlpha = Math.max(0, Math.min(1, t));
@@ -862,15 +1517,23 @@ export function drawParticles(
       ctx.save();
       ctx.translate(p.x, p.y);
       ctx.rotate(p.life * 6);
+      // Foreshortened as it tumbles, so the shower has depth.
+      ctx.scale(1, Math.abs(Math.cos(p.life * 6)) * 0.8 + 0.2);
       ctx.fillRect(-p.size / 2, -p.size / 4, p.size, p.size / 2);
       ctx.restore();
+    } else if (p.kind === 'spark') {
+      ctx.globalCompositeOperation = 'lighter';
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.globalCompositeOperation = 'source-over';
     } else {
       ctx.beginPath();
-      ctx.arc(p.x, p.y, p.size * (p.kind === 'dust' ? 2 - t : 1), 0, Math.PI * 2);
+      ctx.arc(p.x, p.y, p.size * (2 - t), 0, Math.PI * 2);
       ctx.fill();
     }
   }
-  ctx.globalAlpha = 1;
+  ctx.restore();
 }
 
 /**

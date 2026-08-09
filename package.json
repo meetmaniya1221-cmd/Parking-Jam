@@ -13,6 +13,7 @@
     "test:watch": "vitest",
     "verify": "npm run typecheck && npm run test && npm run build",
     "smoke": "node scripts/smoke.mjs",
+    "gallery": "node scripts/gallery.mjs",
     "perf": "node scripts/perf.mjs",
     "journey": "node scripts/journey.mjs",
     "firstrun": "node scripts/firstrun.mjs"

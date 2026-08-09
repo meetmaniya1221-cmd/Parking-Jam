@@ -9,6 +9,7 @@ npm install
 npm run dev        # play it at http://127.0.0.1:5173
 npm run verify     # typecheck + unit tests + production build
 npm run smoke      # drive the real game in Chromium and screenshot it
+npm run gallery    # screenshot a spread of lots, modifiers and a11y modes
 ```
 
 ## The game in one paragraph
@@ -69,9 +70,15 @@ The related trap: how open a lot feels on move one has to be scored as a *share*
 
 ### `src/view` — the lot you can touch
 
-A 2D toy diorama. The ground is a foreshortened grid baked to an offscreen canvas and blitted, so a frame costs one image draw plus the vehicles. Each vehicle is a chunky bevelled brick: a dark base plate, three lit side faces, an inset top, wheels at the axle line and a rim that keeps bumper-to-bumper cars of the same colour distinct.
+A 2D toy diorama, lit by one warm key from the upper left. Every solid thing is built the same way — a base footprint, a lifted top face, and the side faces between them.
 
-Extrusion height is deliberately low. A lifted top face is drawn *above* its own cells, so a tall car covers the one parked behind it — enough height to read as a solid object, not so much that it hides a neighbour and breaks the count.
+A vehicle is not one brick but a **stack of volumes**: a lower body, and then a greenhouse, a cargo box or a roof sign standing on top of it. That stack is what gives each class a silhouette you can name before you read its colour — a cab-and-box truck, a nearly-full-length coach canopy, a flatbed with the cab at the nose, a stubby coupe cabin. On top of the body sit headlamps, tail lights and a grille shadow, so which way a car faces reads from its own shape rather than from a marker laid over it.
+
+Extrusion height is deliberately low, and the stack shares one budget with the body rather than adding to it. A lifted top face is drawn *above* its own cells, so a tall car covers the one parked behind it — enough height to read as a solid object, not so much that it hides a neighbour and breaks the count.
+
+The asphalt is not a flat fill: aggregate grain, old spills and tyre scuff are generated once into a repeating tile, and the slab carries bay paint, an occlusion ring at the kerb line and a vignette that lands the eye centre-lot. The lot sits inside a raised concrete lip, which is what seats it in the street instead of floating on it.
+
+Two caches keep that affordable. The ground is baked to an offscreen canvas and blitted. And a vehicle that is not mid-bump draws the identical picture every frame, so it is rendered once into its own small canvas and blitted thereafter — a still frame costs one ground image plus one image per car. Anything mid-bump falls back to painting live, which is at most a car or two at a time; both paths call the same paint function, so there is exactly one description of what a car looks like. Nothing uses `shadowBlur` — every soft edge here is cheaper as a stack of shapes.
 
 Slides use an anticipation ease: a short pull-back, an eased run, a two-bounce suspension settle, and a body that leans against its own acceleration. Exits accelerate away. The last car gets four tenths of a second of slow motion and a camera pull-back.
 
@@ -117,7 +124,11 @@ Vehicle identity is never colour-only: class silhouettes differ, facing reads fr
 
 `npm run smoke` is the one that catches what unit tests cannot. It boots the real game in Chromium at phone resolution, clears levels by dispatching genuine pointer events, drags a blocked car to check it bumps rather than escapes, undoes a slide, opens a hint, plays a Night Shift lot, runs a Metered Lot dry to check the save-me appears and that declining lands on a breather, plays a level with the keyboard alone, walks every meta screen, and fails on any console error, page exception, failed request, stacked modal or empty screen.
 
-`npm run firstrun` measures the opening: time from navigation to a touchable lot, and whether the guiding hand arrives after four seconds of hesitation and points at a car that can actually leave. It reports around 230 ms to touchable on this machine.
+`npm run firstrun` measures the opening: time from navigation to a touchable lot, and whether the guiding hand arrives after four seconds of hesitation and points at a car that can actually leave. On this machine it reports about 300 ms to touchable against the production build.
+
+That figure is up from roughly 240 ms before the lot was textured, and the difference is real rather than noise — measured by rebuilding both versions and running the probe against each. It buys aggregate grain, weathering, the occlusion ring and the vignette, and it is paid once per lot rather than per frame. The two obvious wastes were removed once they were measured: the street apron no longer gets a grain pass it would only have overdrawn, and the grain is filled at CSS resolution and blitted up instead of being stamped per device pixel — nine times less fill at dpr 3, on noise that loses nothing to the upscale.
+
+`npm run gallery` screenshots a spread of lots covering every vehicle class and modifier, plus the colourblind, high-contrast and Night Shift modes — the fastest way to see whether a rendering change reads at a glance.
 
 `npm run journey` goes the long way round: it restores two districts through the UI, watches the timelapse, collects capped income, builds a landmark, buys and equips a livery, then screenshots every accessibility mode and three viewports down to 320px, failing on any sideways scroll. `npm run perf` reports frame times.
 

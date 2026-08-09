@@ -1110,7 +1110,7 @@ export class LotView {
     const views = this.collectVehicleViews();
     // Painter's order: nearer to the bottom of the screen draws last.
     views.sort((a, b) => a.gy + a.gx * 0.001 - (b.gy + b.gx * 0.001));
-    for (const v of views) drawVehicle(ctx, v, this.camera, this.view.palette);
+    for (const v of views) drawVehicle(ctx, v, this.camera, this.view.palette, this.dpr);
 
     if (this.view.night) drawNightMask(ctx, views, this.camera, cssW, cssH);
     drawParticles(ctx, this.particles);
