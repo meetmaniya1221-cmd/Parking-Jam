@@ -1,0 +1,5 @@
+{
+  "//": "The game is \"type\": \"module\", so without this Node parses these vendored CommonJS hooks as ESM and every session start dies on `require`. Scoped to this directory only — it does not touch the game's build.",
+  "type": "commonjs",
+  "private": true
+}
